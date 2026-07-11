@@ -15,13 +15,16 @@ if [ ! -d "${WORKSPACE}" ]; then
 fi
 
 WORKSPACE="$(cd "${WORKSPACE}" && pwd)"
-workspace_name="$(basename "${WORKSPACE}")"
-safe_name="$(printf '%s' "${workspace_name}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.-]/-/g; s/--*/-/g; s/^[.-]*//; s/[.-]*$//')"
-if [ -z "${safe_name}" ]; then
-  safe_name="workspace"
+if command -v sha256sum >/dev/null 2>&1; then
+  workspace_hash="$(printf '%s' "${WORKSPACE}" | sha256sum | cut -c1-12)"
+elif command -v shasum >/dev/null 2>&1; then
+  workspace_hash="$(printf '%s' "${WORKSPACE}" | shasum -a 256 | cut -c1-12)"
+else
+  echo "sha256sum or shasum is required to generate the sandbox name." >&2
+  exit 1
 fi
 
-SANDBOX_NAME="${SBX_NAME:-codex-vscode-${safe_name}}"
+SANDBOX_NAME="${SBX_NAME:-vsc-${workspace_hash}}"
 PROFILE="${SBX_PROFILE:-}"
 TEMPLATE_NAME="${SBX_TEMPLATE_NAME:-local/vscode-codex:1}"
 

@@ -145,7 +145,7 @@ sbx-vscode
 
 起動スクリプトは次の処理を行います。
 
-1. workspace名から `codex-vscode-<workspace>` 形式のsandbox名を生成する。
+1. workspaceの絶対pathのSHA-256 hash（先頭12文字）から `vsc-<hash>` 形式のsandbox名を生成する。同名ディレクトリでも絶対pathが異なれば別sandboxになる。
 2. 未作成の場合、ローカルtemplateとnetwork mixin Kitを使ってCodex sandboxを作成する。
 3. 既存の場合は同名sandboxを再利用する。
 4. hostと同じ絶対pathへmountされたworkspaceを作業ディレクトリとして、`sbx exec` でsandbox内の `code tunnel` を対話的に起動する。
@@ -159,7 +159,7 @@ Docker Sandboxesのdirect mountはhost workspaceをsandbox内でも同じ絶対p
 環境変数でworkspace、sandbox名、governance profileを上書きできます。
 
 ```bash
-SBX_NAME=codex-vscode-project \
+SBX_NAME=vsc-project \
 SBX_PROFILE=profile-name \
 SBX_TEMPLATE_NAME=local/vscode-codex:1 \
 /path/to/vscode-in-sandbox/sbx-vscode /path/to/project
