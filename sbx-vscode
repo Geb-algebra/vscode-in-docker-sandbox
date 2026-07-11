@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE="${SBX_WORKSPACE:-${1:-$PWD}}"
+
+if ! command -v sbx >/dev/null 2>&1; then
+  echo "sbx is required to run the VS Code sandbox." >&2
+  exit 1
+fi
+
+if [ ! -d "${WORKSPACE}" ]; then
+  printf 'Workspace does not exist: %s\n' "${WORKSPACE}" >&2
+  exit 1
+fi
+
+WORKSPACE="$(cd "${WORKSPACE}" && pwd)"
+workspace_name="$(basename "${WORKSPACE}")"
+safe_name="$(printf '%s' "${workspace_name}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.-]/-/g; s/--*/-/g; s/^[.-]*//; s/[.-]*$//')"
+if [ -z "${safe_name}" ]; then
+  safe_name="workspace"
+fi
+
+SANDBOX_NAME="${SBX_NAME:-codex-vscode-${safe_name}}"
+PROFILE="${SBX_PROFILE:-}"
+TEMPLATE_NAME="${SBX_TEMPLATE_NAME:-local/vscode-codex:1}"
+
+log() {
+  printf '[sbx-vscode] %s\n' "$*" >&2
+}
+
+if sbx ls -q | grep -Fqx "${SANDBOX_NAME}"; then
+  log "reusing sandbox: ${SANDBOX_NAME}"
+else
+  create_args=(create --name "${SANDBOX_NAME}" --template "${TEMPLATE_NAME}" --kit "${SCRIPT_DIR}")
+  if [ -n "${PROFILE}" ]; then
+    create_args+=(--profile "${PROFILE}")
+  fi
+  create_args+=(codex "${WORKSPACE}")
+
+  log "creating Codex sandbox: ${SANDBOX_NAME}"
+  log "template: ${TEMPLATE_NAME}"
+  log "workspace: ${WORKSPACE}"
+  log "Codex authentication must be configured on the host with:"
+  log "  sbx secret set -g openai --oauth"
+  sbx "${create_args[@]}"
+fi
+
+log "starting VS Code Tunnel in mounted workspace: ${WORKSPACE}"
+log "complete GitHub device authentication when prompted"
+exec sbx exec \
+  -i \
+  -t \
+  -u agent \
+  -w "${WORKSPACE}" \
+  -e VSCODE_CLI_USE_FILE_KEYCHAIN=1 \
+  "${SANDBOX_NAME}" \
+  code tunnel --accept-server-license-terms

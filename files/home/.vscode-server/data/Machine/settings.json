@@ -1,0 +1,27 @@
+{
+    "workbench.colorTheme": "Nord",
+    "editor.rulers": [99],
+    "editor.fontSize": 20,
+    "editor.fontFamily": "Ubuntu Mono, Hiragino Sans",
+    "terminal.integrated.cursorStyle": "line",
+    "terminal.integrated.fontSize": 18,
+    "workbench.tree.indent": 18,
+    "workbench.activityBar.location": "top",
+    "editor.lineHeight": 1.25,
+    "editor.cursorSurroundingLines": 10,
+    "editor.cursorBlinking": "phase",
+    "editor.letterSpacing": -1,
+    "terminal.integrated.letterSpacing": -1,
+    "terminal.integrated.profiles.linux": {
+        "zsh": {
+            "path": "/usr/bin/zsh",
+            "args": ["-l"]
+        }
+    },
+    "terminal.integrated.defaultProfile.linux": "zsh",
+    "terminal.integrated.automationProfile.linux": {
+        "path": "/bin/bash"
+    },
+    "scm.defaultViewMode": "tree",
+    "chatgpt.composerEnterBehavior": "cmdAlways"
+}
