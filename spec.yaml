@@ -1,6 +1,6 @@
 schemaVersion: "1"
 kind: mixin
-name: vscode-in-sandbox
+name: vscode-in-docker-sandbox
 displayName: VS Code Tunnel development environment
 description: Adds pinned Node.js, pnpm, Python, uv, VS Code Tunnel, and shared VS Code preferences to a Codex sandbox.
 
