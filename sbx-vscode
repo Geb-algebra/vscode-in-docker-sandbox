@@ -15,6 +15,21 @@ if [ ! -d "${WORKSPACE}" ]; then
 fi
 
 WORKSPACE="$(cd "${WORKSPACE}" && pwd)"
+
+GIT_COMMON_DIR=""
+if command -v git >/dev/null 2>&1; then
+  git_dir="$(git -C "${WORKSPACE}" rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
+  git_common_dir="$(git -C "${WORKSPACE}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+
+  if [ -n "${git_dir}" ] && [ -d "${git_dir}" ] && [ -n "${git_common_dir}" ] && [ -d "${git_common_dir}" ]; then
+    git_dir="$(cd "${git_dir}" && pwd -P)"
+    git_common_dir="$(cd "${git_common_dir}" && pwd -P)"
+    if [ "${git_dir}" != "${git_common_dir}" ]; then
+      GIT_COMMON_DIR="${git_common_dir}"
+    fi
+  fi
+fi
+
 if command -v sha256sum >/dev/null 2>&1; then
   workspace_hash="$(printf '%s' "${WORKSPACE}" | sha256sum | cut -c1-12)"
 elif command -v shasum >/dev/null 2>&1; then
@@ -24,13 +39,24 @@ else
   exit 1
 fi
 
-SANDBOX_NAME="${SBX_NAME:-vsc-${workspace_hash}}"
+workspace_name="$(basename "${WORKSPACE}" | sed -E 's/[^A-Za-z0-9.+-]+/-/g; s/^-+//; s/-+$//')"
+if [ -z "${workspace_name}" ]; then
+  workspace_name="workspace"
+fi
+
+SANDBOX_NAME="${SBX_NAME:-vsc-${workspace_name}-${workspace_hash}}"
 PROFILE="${SBX_PROFILE:-}"
 TEMPLATE_NAME="${SBX_TEMPLATE_NAME:-local/vscode-codex:1}"
+AUTO_OPEN="${SBX_AUTO_OPEN:-1}"
 
 log() {
   printf '[sbx-vscode] %s\n' "$*" >&2
 }
+
+if [ -n "${GIT_COMMON_DIR}" ]; then
+  log "linked worktree detected: ${WORKSPACE}"
+  log "shared Git directory (read-write mount): ${GIT_COMMON_DIR}"
+fi
 
 if sbx ls -q | grep -Fqx "${SANDBOX_NAME}"; then
   log "reusing sandbox: ${SANDBOX_NAME}"
@@ -40,6 +66,9 @@ else
     create_args+=(--profile "${PROFILE}")
   fi
   create_args+=(codex "${WORKSPACE}")
+  if [ -n "${GIT_COMMON_DIR}" ]; then
+    create_args+=("${GIT_COMMON_DIR}")
+  fi
 
   log "creating Codex sandbox: ${SANDBOX_NAME}"
   log "template: ${TEMPLATE_NAME}"
@@ -51,11 +80,44 @@ fi
 
 log "starting VS Code Tunnel in mounted workspace: ${WORKSPACE}"
 log "complete GitHub device authentication when prompted"
-exec sbx exec \
+log "after the tunnel is ready, open this workspace from the host with:"
+printf '[sbx-vscode]   code --new-window --remote %q %q\n' "tunnel+${SANDBOX_NAME}" "${WORKSPACE}" >&2
+
+auto_open_pid=""
+if [ "${AUTO_OPEN}" != "0" ]; then
+  if command -v code >/dev/null 2>&1; then
+    (
+      while :; do
+        tunnel_info="$(sbx exec "${SANDBOX_NAME}" code tunnel status 2>/dev/null || true)"
+        if printf '%s' "${tunnel_info}" | grep -Eq '"tunnel"[[:space:]]*:[[:space:]]*"Connected"'; then
+          break
+        fi
+        sleep 2
+      done
+      log "tunnel is ready; opening the workspace in local VS Code"
+      code --new-window --remote "tunnel+${SANDBOX_NAME}" "${WORKSPACE}"
+    ) &
+    auto_open_pid="$!"
+  else
+    log "local code command not found; skipping automatic VS Code launch"
+  fi
+fi
+
+set +e
+sbx exec \
   -i \
   -t \
   -u agent \
   -w "${WORKSPACE}" \
   -e VSCODE_CLI_USE_FILE_KEYCHAIN=1 \
   "${SANDBOX_NAME}" \
-  code tunnel --accept-server-license-terms
+  code tunnel --name "${SANDBOX_NAME}" --accept-server-license-terms
+tunnel_status="$?"
+set -e
+
+if [ -n "${auto_open_pid}" ]; then
+  kill "${auto_open_pid}" >/dev/null 2>&1 || true
+  wait "${auto_open_pid}" 2>/dev/null || true
+fi
+
+exit "${tunnel_status}"

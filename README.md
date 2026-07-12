@@ -145,14 +145,36 @@ sbx-vscode
 
 起動スクリプトは次の処理を行います。
 
-1. workspaceの絶対pathのSHA-256 hash（先頭12文字）から `vsc-<hash>` 形式のsandbox名を生成する。同名ディレクトリでも絶対pathが異なれば別sandboxになる。
-2. 未作成の場合、ローカルtemplateとnetwork mixin Kitを使ってCodex sandboxを作成する。
-3. 既存の場合は同名sandboxを再利用する。
-4. hostと同じ絶対pathへmountされたworkspaceを作業ディレクトリとして、`sbx exec` でsandbox内の `code tunnel` を対話的に起動する。
+1. workspaceのディレクトリ名と絶対pathのSHA-256 hash（先頭12文字）から `vsc-<dirname>-<hash>` 形式のsandbox名を生成する。同名ディレクトリでも絶対pathが異なれば別sandboxになる。ディレクトリ名にsandbox名で使用できない文字がある場合は `-` に置き換える。
+2. workspaceがGit linked worktreeの場合、Gitの共通ディレクトリ（元リポジトリの `.git`）を自動検出する。
+3. 未作成の場合、ローカルtemplateとnetwork mixin Kitを使ってCodex sandboxを作成する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
+4. 既存の場合は同名sandboxを再利用する。
+5. hostと同じ絶対pathへmountされたworkspaceを作業ディレクトリとして、`sbx exec` でsandbox内の `code tunnel` を対話的に起動する。
 
 Docker Sandboxesのdirect mountはhost workspaceをsandbox内でも同じ絶対pathへmountします。Codex agentとVS Code Tunnelは、どちらもこのmount先を作業ディレクトリとして起動します。`~/workspace` は使用しません。
 
+linked worktreeの判定には `git rev-parse --git-dir --git-common-dir` を使用します。worktree固有のGit directoryと共通Git directoryが異なる場合にだけ、共通 `.git` を追加mountします。commit、index、branchなどのGit管理情報を更新できるよう、この追加mountはread-writeです。元リポジトリの作業ツリー自体はmountしません。通常のGitリポジトリやGit管理外のworkspaceでは追加mountされません。
+
+既存sandboxのmount構成は変更できません。この機能を追加する前に作成したlinked worktree用sandboxでは、ログに表示されるsandbox名を確認してから削除し、再作成してください。
+
+```bash
+sbx rm <sandbox-name>
+sbx-vscode /path/to/linked-worktree
+```
+
 表示されたGitHub device-login URLを開き、codeを入力します。その後、ローカルVS CodeのRemote Explorerから同じGitHub accountでsign inし、表示されたTunnelへ接続してください。接続後に空の `~/workspace` が表示された場合は、そのwindowを閉じ、`File: Open Folder...` から起動ログに表示された絶対pathのworkspaceを開きます。
+
+起動ログには、Tunnelの準備完了後にhost側で実行できる `code` コマンドも表示されます。hostで `code` コマンドが利用可能な場合はTunnelの準備完了を自動検出し、このコマンドを実行します。Tunnelへ接続した新しいVS Code windowでmount済みworkspaceが直接開きます。ローカルVS CodeにRemote - Tunnels拡張がinstallされ、Tunnelと同じGitHub accountで認証されている必要があります。
+
+```bash
+code --new-window --remote tunnel+<sandbox-name> /absolute/path/to/workspace
+```
+
+GUIを自動起動せずコマンド表示だけにする場合は、`SBX_AUTO_OPEN=0` を指定します。
+
+```bash
+SBX_AUTO_OPEN=0 sbx-vscode /path/to/workspace
+```
 
 ## 起動設定の上書き
 
@@ -162,6 +184,7 @@ Docker Sandboxesのdirect mountはhost workspaceをsandbox内でも同じ絶対p
 SBX_NAME=vsc-project \
 SBX_PROFILE=profile-name \
 SBX_TEMPLATE_NAME=local/vscode-codex:1 \
+SBX_AUTO_OPEN=0 \
 /path/to/vscode-in-sandbox/sbx-vscode /path/to/project
 ```
 
@@ -170,6 +193,7 @@ SBX_NAME       sandbox名
 SBX_WORKSPACE  workspaceの絶対path。第1引数より優先される
 SBX_PROFILE    Docker Sandboxesのgovernance profile
 SBX_TEMPLATE_NAME  sbxへload済みのtemplate名
+SBX_AUTO_OPEN  `0` の場合はTunnel準備完了後のローカルVS Code自動起動を無効化
 ```
 
 ## Codex拡張の認証制約
