@@ -145,7 +145,7 @@ sbx-vscode
 
 起動スクリプトは次の処理を行います。
 
-1. workspaceのディレクトリ名と絶対pathのSHA-256 hash（先頭12文字）から `vsc-<dirname>-<hash>` 形式のsandbox名を生成する。同名ディレクトリでも絶対pathが異なれば別sandboxになる。ディレクトリ名にsandbox名で使用できない文字がある場合は `-` に置き換える。
+1. workspaceのディレクトリ名（先頭10文字）と絶対pathのSHA-256 hash（先頭8文字）から `<dirname>-<hash>` 形式のsandbox名を生成する。最大19文字に収まり、VS Code Tunnelの20文字制限を超えない。同名ディレクトリでも絶対pathが異なれば別sandboxになる。ディレクトリ名にTunnel名で使用できない文字がある場合は `-` に置き換える。
 2. workspaceがGit linked worktreeの場合、Gitの共通ディレクトリ（元リポジトリの `.git`）を自動検出する。
 3. 未作成の場合、ローカルtemplateとnetwork mixin Kitを使ってCodex sandboxを作成する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
 4. 既存の場合は同名sandboxを再利用する。
