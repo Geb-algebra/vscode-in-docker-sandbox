@@ -9,6 +9,31 @@ if ! command -v sbx >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v ssh >/dev/null 2>&1; then
+  echo "ssh is required to connect VS Code to the sandbox." >&2
+  exit 1
+fi
+
+if ! command -v code >/dev/null 2>&1; then
+  echo "The local code command is required to open VS Code over SSH." >&2
+  exit 1
+fi
+
+if ! sbx ports --help >/dev/null 2>&1; then
+  echo "The installed sbx CLI does not support sandbox port publishing." >&2
+  exit 1
+fi
+
+if ! command -v ssh-keygen >/dev/null 2>&1; then
+  echo "ssh-keygen is required to create the dedicated sandbox SSH key." >&2
+  exit 1
+fi
+
+if ! code --list-extensions 2>/dev/null | grep -Fxiq 'ms-vscode-remote.remote-ssh'; then
+  echo "The VS Code Remote - SSH extension is required (ms-vscode-remote.remote-ssh)." >&2
+  exit 1
+fi
+
 if [ ! -d "${WORKSPACE}" ]; then
   printf 'Workspace does not exist: %s\n' "${WORKSPACE}" >&2
   exit 1
@@ -48,16 +73,42 @@ SANDBOX_NAME="${SBX_NAME:-${workspace_name}-${workspace_hash}}"
 PROFILE="${SBX_PROFILE:-}"
 TEMPLATE_NAME="${SBX_TEMPLATE_NAME:-local/vscode-codex:1}"
 AUTO_OPEN="${SBX_AUTO_OPEN:-1}"
+HOST_SSH_DIR="${HOME}/.ssh"
+SSH_KEY_PATH="${HOST_SSH_DIR}/docker-sandbox-vscode_ed25519"
+SSH_CONFIG_PATH="${HOST_SSH_DIR}/config"
+SSH_CONFIG_DIR="${HOST_SSH_DIR}/config.d/docker-sandbox-vscode"
+SSH_CONFIG_INCLUDE='Include ~/.ssh/config.d/docker-sandbox-vscode/*.conf'
+SSH_HOST_ALIAS="sbx-${SANDBOX_NAME}"
+SSH_KNOWN_HOSTS_PATH="${HOST_SSH_DIR}/docker-sandbox-vscode_known_hosts"
 
 log() {
   printf '[sbx-vscode] %s\n' "$*" >&2
 }
+
+umask 077
+mkdir -p "${HOST_SSH_DIR}" "${SSH_CONFIG_DIR}"
+chmod 700 "${HOST_SSH_DIR}" "${SSH_CONFIG_DIR}"
+
+if [ ! -f "${SSH_KEY_PATH}" ]; then
+  if [ -e "${SSH_KEY_PATH}.pub" ]; then
+    printf 'SSH public key exists without its private key: %s.pub\n' "${SSH_KEY_PATH}" >&2
+    exit 1
+  fi
+  log "creating host-wide SSH key dedicated to Docker sandbox access"
+  ssh-keygen -q -t ed25519 -N '' -C 'docker-sandbox-vscode' -f "${SSH_KEY_PATH}"
+elif [ ! -f "${SSH_KEY_PATH}.pub" ]; then
+  log "recreating the missing public key from the host private key"
+  ssh-keygen -y -f "${SSH_KEY_PATH}" > "${SSH_KEY_PATH}.pub"
+fi
+chmod 600 "${SSH_KEY_PATH}"
+chmod 644 "${SSH_KEY_PATH}.pub"
 
 if [ -n "${GIT_COMMON_DIR}" ]; then
   log "linked worktree detected: ${WORKSPACE}"
   log "shared Git directory (read-write mount): ${GIT_COMMON_DIR}"
 fi
 
+created_sandbox=0
 if sbx ls -q | grep -Fqx "${SANDBOX_NAME}"; then
   log "reusing sandbox: ${SANDBOX_NAME}"
 else
@@ -76,48 +127,156 @@ else
   log "Codex authentication must be configured on the host with:"
   log "  sbx secret set -g openai --oauth"
   sbx "${create_args[@]}"
+  created_sandbox=1
 fi
 
-log "starting VS Code Tunnel in mounted workspace: ${WORKSPACE}"
-log "complete GitHub device authentication when prompted"
-log "after the tunnel is ready, open this workspace from the host with:"
-printf '[sbx-vscode]   code --new-window --remote %q %q\n' "tunnel+${SANDBOX_NAME}" "${WORKSPACE}" >&2
+if ! sbx exec -u root "${SANDBOX_NAME}" test -x /usr/sbin/sshd; then
+  log "OpenSSH server is missing from sandbox: ${SANDBOX_NAME}"
+  log "rebuild the template, then remove and recreate this sandbox:"
+  log "  ${SCRIPT_DIR}/build-template.sh"
+  log "  sbx rm ${SANDBOX_NAME}"
+  exit 1
+fi
 
-auto_open_pid=""
-if [ "${AUTO_OPEN}" != "0" ]; then
-  if command -v code >/dev/null 2>&1; then
-    (
-      while :; do
-        tunnel_info="$(sbx exec "${SANDBOX_NAME}" code tunnel status 2>/dev/null || true)"
-        if printf '%s' "${tunnel_info}" | grep -Eq '"tunnel"[[:space:]]*:[[:space:]]*"Connected"'; then
-          break
-        fi
-        sleep 2
-      done
-      log "tunnel is ready; opening the workspace in local VS Code"
-      code --new-window --remote "tunnel+${SANDBOX_NAME}" "${WORKSPACE}"
-    ) &
-    auto_open_pid="$!"
-  else
-    log "local code command not found; skipping automatic VS Code launch"
+log "installing the shared host public key in sandbox: ${SANDBOX_NAME}"
+sbx exec -i -u root "${SANDBOX_NAME}" sh -c '
+  set -eu
+  install -d -m 0700 -o agent -g agent /home/agent/.ssh
+  cat > /home/agent/.ssh/authorized_keys
+  chown agent:agent /home/agent/.ssh/authorized_keys
+  chmod 0600 /home/agent/.ssh/authorized_keys
+  install -d -m 0755 /run/sshd
+  ssh-keygen -A
+' < "${SSH_KEY_PATH}.pub"
+
+if ! sbx exec -u root "${SANDBOX_NAME}" pgrep -x sshd >/dev/null 2>&1; then
+  log "starting OpenSSH server in sandbox: ${SANDBOX_NAME}"
+  sbx exec -u root "${SANDBOX_NAME}" /usr/sbin/sshd
+fi
+
+get_ssh_host_port() {
+  sbx ports "${SANDBOX_NAME}" --json | awk '
+    BEGIN { RS = "}" }
+    {
+      host_ip = ""
+      host_port = ""
+      sandbox_port = ""
+      protocol = ""
+      count = split($0, fields, ",")
+      for (i = 1; i <= count; i++) {
+        separator = index(fields[i], ":")
+        if (separator == 0) {
+          continue
+        }
+        key = substr(fields[i], 1, separator - 1)
+        value = substr(fields[i], separator + 1)
+        gsub(/[][{}[:space:]"]/, "", key)
+        gsub(/[][{}[:space:]"]/, "", value)
+        if (key == "host_ip") host_ip = value
+        if (key == "host_port") host_port = value
+        if (key == "sandbox_port") sandbox_port = value
+        if (key == "protocol") protocol = value
+      }
+      if (host_ip == "127.0.0.1" && sandbox_port == "22" && protocol == "tcp4") {
+        print host_port
+        exit
+      }
+    }
+  '
+}
+
+SSH_HOST_PORT="$(get_ssh_host_port)"
+if [ -z "${SSH_HOST_PORT}" ]; then
+  log "publishing sandbox SSH port on host loopback"
+  sbx ports "${SANDBOX_NAME}" --publish 22/tcp4
+  SSH_HOST_PORT="$(get_ssh_host_port)"
+fi
+if [ -z "${SSH_HOST_PORT}" ]; then
+  log "failed to determine the published host port for sandbox SSH"
+  exit 1
+fi
+
+if [ ! -f "${SSH_CONFIG_PATH}" ]; then
+  touch "${SSH_CONFIG_PATH}"
+  chmod 600 "${SSH_CONFIG_PATH}"
+fi
+if ! grep -Fqx "${SSH_CONFIG_INCLUDE}" "${SSH_CONFIG_PATH}"; then
+  ssh_config_tmp="$(mktemp "${SSH_CONFIG_PATH}.tmp.XXXXXX")"
+  {
+    printf '%s\n\n' "${SSH_CONFIG_INCLUDE}"
+    cat "${SSH_CONFIG_PATH}"
+  } > "${ssh_config_tmp}"
+  chmod 600 "${ssh_config_tmp}"
+  mv "${ssh_config_tmp}" "${SSH_CONFIG_PATH}"
+fi
+
+SSH_CONFIG_FRAGMENT="${SSH_CONFIG_DIR}/${SANDBOX_NAME}.conf"
+if [ "${created_sandbox}" = "1" ] && [ -f "${SSH_KNOWN_HOSTS_PATH}" ]; then
+  ssh-keygen -q -R "docker-sandbox-${SANDBOX_NAME}" -f "${SSH_KNOWN_HOSTS_PATH}" >/dev/null
+fi
+ssh_fragment_tmp="$(mktemp "${SSH_CONFIG_FRAGMENT}.tmp.XXXXXX")"
+{
+  printf 'Host %s\n' "${SSH_HOST_ALIAS}"
+  printf '  HostName 127.0.0.1\n'
+  printf '  Port %s\n' "${SSH_HOST_PORT}"
+  printf '  User agent\n'
+  printf '  IdentityFile "%s"\n' "${SSH_KEY_PATH}"
+  printf '  IdentitiesOnly yes\n'
+  printf '  ForwardAgent no\n'
+  printf '  HostKeyAlias docker-sandbox-%s\n' "${SANDBOX_NAME}"
+  printf '  UserKnownHostsFile "%s"\n' "${SSH_KNOWN_HOSTS_PATH}"
+  printf '  StrictHostKeyChecking accept-new\n'
+  printf '  UpdateHostKeys no\n'
+  printf '  LogLevel ERROR\n'
+} > "${ssh_fragment_tmp}"
+chmod 600 "${ssh_fragment_tmp}"
+mv "${ssh_fragment_tmp}" "${SSH_CONFIG_FRAGMENT}"
+
+ssh_ready=0
+for _ in $(seq 1 30); do
+  if ssh -o BatchMode=yes -o ConnectTimeout=1 "${SSH_HOST_ALIAS}" true >/dev/null 2>&1; then
+    ssh_ready=1
+    break
   fi
+  sleep 1
+done
+if [ "${ssh_ready}" != "1" ]; then
+  log "OpenSSH server did not become ready: ${SSH_HOST_ALIAS}"
+  exit 1
 fi
 
-set +e
-sbx exec \
-  -i \
-  -t \
-  -u agent \
-  -w "${WORKSPACE}" \
-  -e VSCODE_CLI_USE_FILE_KEYCHAIN=1 \
-  "${SANDBOX_NAME}" \
-  code tunnel --name "${SANDBOX_NAME}" --accept-server-license-terms
-tunnel_status="$?"
-set -e
+REMOTE_AUTHORITY="ssh-remote+${SSH_HOST_ALIAS}"
 
-if [ -n "${auto_open_pid}" ]; then
-  kill "${auto_open_pid}" >/dev/null 2>&1 || true
-  wait "${auto_open_pid}" 2>/dev/null || true
+log "sandbox SSH target: ${SSH_HOST_ALIAS}"
+log "connect from the host with:"
+printf '[sbx-vscode]   ssh %q\n' "${SSH_HOST_ALIAS}" >&2
+log "open the mounted workspace in VS Code with:"
+printf '[sbx-vscode]   code --new-window --remote %q %q\n' "${REMOTE_AUTHORITY}" "${WORKSPACE}" >&2
+
+if [ "${AUTO_OPEN}" != "0" ]; then
+  log "opening the workspace in local VS Code over SSH"
+  code --new-window --remote "${REMOTE_AUTHORITY}" "${WORKSPACE}"
 fi
 
-exit "${tunnel_status}"
+keepalive_pid=""
+
+stop_sandbox() {
+  status="$?"
+  trap - EXIT INT TERM
+  if [ -n "${keepalive_pid}" ] && kill -0 "${keepalive_pid}" >/dev/null 2>&1; then
+    kill "${keepalive_pid}" >/dev/null 2>&1 || true
+    wait "${keepalive_pid}" 2>/dev/null || true
+  fi
+  log "stopping sandbox: ${SANDBOX_NAME}"
+  sbx stop "${SANDBOX_NAME}" >/dev/null 2>&1 || true
+  exit "${status}"
+}
+
+trap stop_sandbox EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+log "sandbox is running; press Ctrl+C to stop it"
+sbx exec -i -u agent "${SANDBOX_NAME}" tail -f /dev/null &
+keepalive_pid="$!"
+wait "${keepalive_pid}"

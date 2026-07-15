@@ -1,8 +1,8 @@
 schemaVersion: "1"
 kind: mixin
 name: vscode-in-docker-sandbox
-displayName: VS Code Tunnel development environment
-description: Adds pinned Node.js, pnpm, Python, uv, VS Code Tunnel, and shared VS Code preferences to a Codex sandbox.
+displayName: VS Code OpenSSH development environment
+description: Adds OpenSSH, pinned development tools, VS Code, and shared VS Code preferences to a Codex sandbox.
 
 caps:
   network:
@@ -13,8 +13,3 @@ caps:
       - "main.vscode-cdn.net:443"
       - "*.gallery.vsassets.io:443"
       - "*.gallerycdn.vsassets.io:443"
-      - "*.servicebus.windows.net:443"
-
-environment:
-  variables:
-    VSCODE_CLI_USE_FILE_KEYCHAIN: "1"

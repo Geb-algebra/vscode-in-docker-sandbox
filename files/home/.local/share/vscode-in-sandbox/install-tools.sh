@@ -50,6 +50,13 @@ esac
 export DEBIAN_FRONTEND=noninteractive
 log "installing system build dependencies"
 wait_for_apt
+find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec \
+  sed -i \
+    -e 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.ocf.berkeley.edu/ubuntu-ports|g' \
+    -e 's|https://ports.ubuntu.com/ubuntu-ports|https://mirrors.ocf.berkeley.edu/ubuntu-ports|g' \
+    -e 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' \
+    -e 's|http://security.ubuntu.com|https://security.ubuntu.com|g' \
+    {} +
 apt-get -o DPkg::Lock::Timeout=300 update
 apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
   build-essential \
@@ -68,12 +75,16 @@ apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
   libssl-dev \
   libxml2-dev \
   libxmlsec1-dev \
+  openssh-server \
   pkg-config \
   tk-dev \
   uuid-dev \
   xz-utils \
   zsh \
   zlib1g-dev
+
+# Generate unique host keys when each sandbox first starts, not in the shared image.
+rm -f /etc/ssh/ssh_host_*
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
