@@ -2,6 +2,8 @@ FROM docker/sandbox-templates:codex-docker
 
 USER root
 
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 COPY files/home/.local/share/vscode-in-sandbox/install-tools.sh /tmp/vscode-in-sandbox/install-tools.sh
 
 RUN bash /tmp/vscode-in-sandbox/install-tools.sh \

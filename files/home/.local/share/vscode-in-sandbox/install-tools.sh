@@ -5,6 +5,7 @@ NODE_VERSION="24.18.0"
 PNPM_VERSION="11.11.0"
 PYTHON_VERSION="3.14.6"
 UV_VERSION="0.11.28"
+PLAYWRIGHT_CLI_PACKAGE="@playwright/cli@latest"
 
 log() {
   printf '[vscode-in-sandbox:install] %s\n' "$*" >&2
@@ -103,6 +104,21 @@ ln -sfn "/opt/node-v${NODE_VERSION}/bin/corepack" /usr/local/bin/corepack
 log "installing pnpm ${PNPM_VERSION}"
 "/opt/node-v${NODE_VERSION}/bin/npm" install --global --prefix /usr/local "pnpm@${PNPM_VERSION}"
 
+log "installing Playwright CLI"
+"/opt/node-v${NODE_VERSION}/bin/npm" install --global --prefix /usr/local "${PLAYWRIGHT_CLI_PACKAGE}"
+
+log "installing Playwright browser"
+export PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
+mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"
+playwright-cli install-browser --with-deps
+chown -R agent:agent "${PLAYWRIGHT_BROWSERS_PATH}"
+
+log "installing Playwright CLI skill"
+install -d -m 0755 -o agent -g agent /home/agent/.agents/skills
+cp -a /usr/local/lib/node_modules/@playwright/cli/skills/playwright-cli \
+  /home/agent/.agents/skills/
+chown -R agent:agent /home/agent/.agents/skills/playwright-cli
+
 log "building CPython ${PYTHON_VERSION}"
 curl -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz" \
   -o "${tmp_dir}/python.tgz"
@@ -140,3 +156,6 @@ test "$(pnpm --version)" = "${PNPM_VERSION}"
 test "$(python3 --version)" = "Python ${PYTHON_VERSION}"
 test "$(uv --version | awk '{print $2}')" = "${UV_VERSION}"
 command -v code >/dev/null
+command -v playwright-cli >/dev/null
+playwright-cli install-browser --list | grep -q chromium
+test -f /home/agent/.agents/skills/playwright-cli/SKILL.md
