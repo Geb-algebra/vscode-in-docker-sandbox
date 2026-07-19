@@ -145,6 +145,20 @@ sbx exec -i -u root "${SANDBOX_NAME}" sh -c '
   cat > /home/agent/.ssh/authorized_keys
   chown agent:agent /home/agent/.ssh/authorized_keys
   chmod 0600 /home/agent/.ssh/authorized_keys
+
+  environment_tmp="$(mktemp /home/agent/.ssh/environment.tmp.XXXXXX)"
+  trap '\''rm -f "${environment_tmp}"'\'' EXIT HUP INT TERM
+  for variable_name in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+    variable_value="$(printenv "${variable_name}" || true)"
+    if [ -n "${variable_value}" ]; then
+      printf "%s=%s\n" "${variable_name}" "${variable_value}" >> "${environment_tmp}"
+    fi
+  done
+  chown agent:agent "${environment_tmp}"
+  chmod 0600 "${environment_tmp}"
+  mv "${environment_tmp}" /home/agent/.ssh/environment
+  trap - EXIT HUP INT TERM
+
   install -d -m 0755 /run/sshd
   ssh-keygen -A
 ' < "${SSH_KEY_PATH}.pub"

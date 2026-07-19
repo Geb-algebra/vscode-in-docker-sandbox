@@ -90,6 +90,8 @@ OAuth flowはhost上で実行されます。認証結果はOS Keychainに保存�
 
 SSH serverは公開鍵認証だけを許可します。SSH client configには `SendEnv` を設定しないため、host shellのAPI keyやtokenをsandboxへ転送しません。
 
+Docker Sandboxesのcredential proxyをSSH経由のVS Code拡張でも利用できるように、`sbx-vscode` はsandboxへ注入済みの `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` だけを `/home/agent/.ssh/environment` に保存します。sshdはこの3変数だけをSSH sessionへ渡します。値はsandbox起動時に毎回更新され、host shellの環境変数や実tokenは使用しません。
+
 global secretは新しく作成するsandboxにだけ適用されます。認証設定より前に作成したsandboxがある場合は、そのsandboxを削除して作り直してください。
 
 次の情報をKitやworkspaceへ置かないでください。
@@ -208,15 +210,21 @@ SBX_AUTO_OPEN  `0` の場合はローカルVS Code自動起動だけを無効化
 
 ## Codex拡張の認証制約
 
-SSH接続後、Codex拡張が追加loginなしで動作するか確認します。
+SSH接続後のCodex拡張とRemote VS Codeのterminalで実行するCodex CLIは、どちらもDocker Sandboxesのhost-managed認証を使用します。拡張内で追加のChatGPT loginは行わないでください。
 
-拡張がDocker Sandboxesのhost-managed認証を認識しない場合は、拡張からloginしないでください。Remote VS Codeのterminalを開き、Docker標準imageに含まれるCodex CLIを使用します。
+認証に失敗する場合は、sandbox内へtokenを保存せず、まずSSH sessionにcredential proxyの環境変数が渡されているか確認します。
 
 ```bash
-codex
+env | grep -E '^(HTTP_PROXY|HTTPS_PROXY|NO_PROXY)='
 ```
 
-安全性を優先し、この場合はCodex CLIだけを利用できるという制約を受け入れます。
+sshdの設定はtemplate imageへ含まれるため、この対応より前に作成したsandboxへは適用されません。templateを再build/loadして既存sandboxを削除し、`sbx-vscode` で作り直してください。
+
+```bash
+./build-template.sh
+sbx rm <sandbox-name>
+sbx-vscode /path/to/workspace
+```
 
 ## 永続化範囲
 
