@@ -5,7 +5,9 @@ NODE_VERSION="24.18.0"
 PNPM_VERSION="11.11.0"
 PYTHON_VERSION="3.14.6"
 UV_VERSION="0.11.28"
+TERRAFORM_VERSION="1.15.8"
 PLAYWRIGHT_CLI_PACKAGE="@playwright/cli@latest"
+CODEX_CLI_PACKAGE="@openai/codex@latest"
 
 log() {
   printf '[vscode-in-sandbox:install] %s\n' "$*" >&2
@@ -35,11 +37,13 @@ case "$(uname -m)" in
   x86_64)
     node_arch="x64"
     uv_arch="x86_64"
+    terraform_arch="amd64"
     vscode_arch="x64"
     ;;
   aarch64|arm64)
     node_arch="arm64"
     uv_arch="aarch64"
+    terraform_arch="arm64"
     vscode_arch="arm64"
     ;;
   *)
@@ -79,6 +83,7 @@ apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
   openssh-server \
   pkg-config \
   tk-dev \
+  unzip \
   uuid-dev \
   xz-utils \
   zsh \
@@ -103,6 +108,9 @@ ln -sfn "/opt/node-v${NODE_VERSION}/bin/corepack" /usr/local/bin/corepack
 
 log "installing pnpm ${PNPM_VERSION}"
 "/opt/node-v${NODE_VERSION}/bin/npm" install --global --prefix /usr/local "pnpm@${PNPM_VERSION}"
+
+log "installing Codex CLI"
+"/opt/node-v${NODE_VERSION}/bin/npm" install --global --prefix /usr/local "${CODEX_CLI_PACKAGE}"
 
 log "installing Playwright CLI"
 "/opt/node-v${NODE_VERSION}/bin/npm" install --global --prefix /usr/local "${PLAYWRIGHT_CLI_PACKAGE}"
@@ -144,6 +152,12 @@ tar -xzf "${tmp_dir}/uv.tar.gz" -C "${tmp_dir}/uv" --strip-components=1
 install -m 0755 "${tmp_dir}/uv/uv" /usr/local/bin/uv
 install -m 0755 "${tmp_dir}/uv/uvx" /usr/local/bin/uvx
 
+log "installing Terraform ${TERRAFORM_VERSION}"
+curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${terraform_arch}.zip" \
+  -o "${tmp_dir}/terraform.zip"
+unzip -q "${tmp_dir}/terraform.zip" -d "${tmp_dir}/terraform"
+install -m 0755 "${tmp_dir}/terraform/terraform" /usr/local/bin/terraform
+
 log "installing stable VS Code"
 curl -fsSL "https://update.code.visualstudio.com/latest/linux-deb-${vscode_arch}/stable" \
   -o "${tmp_dir}/vscode.deb"
@@ -155,7 +169,9 @@ test "$(node --version)" = "v${NODE_VERSION}"
 test "$(pnpm --version)" = "${PNPM_VERSION}"
 test "$(python3 --version)" = "Python ${PYTHON_VERSION}"
 test "$(uv --version | awk '{print $2}')" = "${UV_VERSION}"
+test "$(terraform version -json | awk -F '\"' '/terraform_version/ { print $4 }')" = "${TERRAFORM_VERSION}"
 command -v code >/dev/null
+command -v codex >/dev/null
 command -v playwright-cli >/dev/null
 playwright-cli install-browser --list | grep -q chromium
 test -f /home/agent/.agents/skills/playwright-cli/SKILL.md

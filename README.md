@@ -45,6 +45,8 @@ Node.js 24.18.0
 pnpm 11.11.0
 Python 3.14.6
 uv 0.11.28
+Terraform 1.15.8
+Codex CLI（`@openai/codex`）
 VS Code stable（CLIを含む）
 zsh / oh-my-zsh（theme: pmcgee）
 ```
@@ -118,7 +120,7 @@ cd /path/to/vscode-in-sandbox
 3. `sbx template load` でDocker Sandboxes側のローカルimage storeへ取り込む。
 4. load完了後に一時tarを削除する。
 
-remote registryへのpushは行いません。Node.js、pnpm、Python、uv、VS Code、共通拡張はimageに入るため、sandbox起動のたびにinstallされません。buildしたhostのCPU architectureに対応するimageが作られます。
+remote registryへのpushは行いません。Node.js、pnpm、Python、uv、Terraform、VS Code、共通拡張はimageに入るため、sandbox起動のたびにinstallされません。buildしたhostのCPU architectureに対応するimageが作られます。
 
 ARM64 imageのUbuntu packageは、`ports.ubuntu.com` ではなくUbuntu登録ミラーの `https://mirrors.ocf.berkeley.edu/ubuntu-ports` から取得します。これはtemplate build時だけの取得先であり、sandboxのnetwork whitelistは追加しません。
 
@@ -284,6 +286,7 @@ sbx exec <sandbox-name> node --version
 sbx exec <sandbox-name> pnpm --version
 sbx exec <sandbox-name> python3 --version
 sbx exec <sandbox-name> uv --version
+sbx exec <sandbox-name> terraform version
 sbx exec -u agent <sandbox-name> code --extensions-dir /home/agent/.vscode-server/extensions --list-extensions
 ssh sbx-<sandbox-name> -- id -un
 ```
@@ -295,4 +298,5 @@ node:   v24.18.0
 pnpm:   11.11.0
 python: Python 3.14.6
 uv:     uv 0.11.28
+terraform: 1.15.8
 ```
