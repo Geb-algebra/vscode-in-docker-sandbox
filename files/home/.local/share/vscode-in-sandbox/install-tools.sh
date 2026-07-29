@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NODE_VERSION="24.18.0"
-PNPM_VERSION="11.11.0"
-PYTHON_VERSION="3.14.6"
-UV_VERSION="0.11.28"
-TERRAFORM_VERSION="1.15.8"
-PLAYWRIGHT_CLI_PACKAGE="@playwright/cli@latest"
-CODEX_CLI_PACKAGE="@openai/codex@latest"
+MISE_VERSION="2026.7.11"
 
 log() {
   printf '[vscode-in-sandbox:install] %s\n' "$*" >&2
@@ -35,16 +29,10 @@ wait_for_apt() {
 
 case "$(uname -m)" in
   x86_64)
-    node_arch="x64"
-    uv_arch="x86_64"
-    terraform_arch="amd64"
-    vscode_arch="x64"
+    mise_arch="x64"
     ;;
   aarch64|arm64)
-    node_arch="arm64"
-    uv_arch="aarch64"
-    terraform_arch="arm64"
-    vscode_arch="arm64"
+    mise_arch="arm64"
     ;;
   *)
     printf 'Unsupported architecture: %s\n' "$(uname -m)" >&2
@@ -68,26 +56,9 @@ apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
   ca-certificates \
   curl \
   git \
-  libbz2-dev \
-  libexpat1-dev \
-  libffi-dev \
-  libgdbm-compat-dev \
-  libgdbm-dev \
-  liblzma-dev \
-  libncursesw5-dev \
-  libreadline-dev \
-  libsqlite3-dev \
-  libssl-dev \
-  libxml2-dev \
-  libxmlsec1-dev \
   openssh-server \
   pkg-config \
-  tk-dev \
-  unzip \
-  uuid-dev \
-  xz-utils \
-  zsh \
-  zlib1g-dev
+  zsh
 
 # Generate unique host keys when each sandbox first starts, not in the shared image.
 rm -f /etc/ssh/ssh_host_*
@@ -95,25 +66,18 @@ rm -f /etc/ssh/ssh_host_*
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
-log "installing Node.js ${NODE_VERSION}"
-curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
-  -o "${tmp_dir}/node.tar.xz"
-rm -rf "/opt/node-v${NODE_VERSION}"
-mkdir -p "/opt/node-v${NODE_VERSION}"
-tar -xJf "${tmp_dir}/node.tar.xz" -C "/opt/node-v${NODE_VERSION}" --strip-components=1
-ln -sfn "/opt/node-v${NODE_VERSION}/bin/node" /usr/local/bin/node
-ln -sfn "/opt/node-v${NODE_VERSION}/bin/npm" /usr/local/bin/npm
-ln -sfn "/opt/node-v${NODE_VERSION}/bin/npx" /usr/local/bin/npx
-ln -sfn "/opt/node-v${NODE_VERSION}/bin/corepack" /usr/local/bin/corepack
+log "installing mise ${MISE_VERSION}"
+curl -fsSL "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${mise_arch}" \
+  -o /usr/local/bin/mise
+chmod 0755 /usr/local/bin/mise
 
-log "installing pnpm ${PNPM_VERSION}"
-"/opt/node-v${NODE_VERSION}/bin/npm" install --global --prefix /usr/local "pnpm@${PNPM_VERSION}"
+log "installing tools from mise config"
+MISE_SYSTEM_DATA_DIR=/usr/local/share/mise mise install --system
 
-log "installing Codex CLI"
-"/opt/node-v${NODE_VERSION}/bin/npm" install --global --prefix /usr/local "${CODEX_CLI_PACKAGE}"
-
-log "installing Playwright CLI"
-"/opt/node-v${NODE_VERSION}/bin/npm" install --global --prefix /usr/local "${PLAYWRIGHT_CLI_PACKAGE}"
+for tool_bin in node npm npx corepack bun python python3 pip3 uv uvx terraform codex playwright-cli; do
+  tool_path="$(MISE_SYSTEM_DATA_DIR=/usr/local/share/mise mise which "${tool_bin}")"
+  ln -sfn "${tool_path}" "/usr/local/bin/${tool_bin}"
+done
 
 log "installing Playwright browser"
 export PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
@@ -123,55 +87,24 @@ chown -R agent:agent "${PLAYWRIGHT_BROWSERS_PATH}"
 
 log "installing Playwright CLI skill"
 install -d -m 0755 -o agent -g agent /home/agent/.agents/skills
-cp -a /usr/local/lib/node_modules/@playwright/cli/skills/playwright-cli \
+playwright_package_dir="$(MISE_SYSTEM_DATA_DIR=/usr/local/share/mise mise where 'npm:@playwright/cli')"
+playwright_skill_dir="$(find "${playwright_package_dir}" -type d -path '*/skills/playwright-cli' -print -quit)"
+test -n "${playwright_skill_dir}"
+cp -a "${playwright_skill_dir}" \
   /home/agent/.agents/skills/
 chown -R agent:agent /home/agent/.agents/skills/playwright-cli
 
-log "building CPython ${PYTHON_VERSION}"
-curl -fsSL "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz" \
-  -o "${tmp_dir}/python.tgz"
-mkdir -p "${tmp_dir}/python-source"
-tar -xzf "${tmp_dir}/python.tgz" -C "${tmp_dir}/python-source" --strip-components=1
-(
-  cd "${tmp_dir}/python-source"
-  ./configure \
-    --prefix="/opt/python-${PYTHON_VERSION}" \
-    --with-ensurepip=install
-  make -j"$(nproc)"
-  make install
-)
-ln -sfn "/opt/python-${PYTHON_VERSION}/bin/python3" /usr/local/bin/python3
-ln -sfn "/opt/python-${PYTHON_VERSION}/bin/python3" /usr/local/bin/python
-ln -sfn "/opt/python-${PYTHON_VERSION}/bin/pip3" /usr/local/bin/pip3
-
-log "installing uv ${UV_VERSION}"
-curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${uv_arch}-unknown-linux-gnu.tar.gz" \
-  -o "${tmp_dir}/uv.tar.gz"
-mkdir -p "${tmp_dir}/uv"
-tar -xzf "${tmp_dir}/uv.tar.gz" -C "${tmp_dir}/uv" --strip-components=1
-install -m 0755 "${tmp_dir}/uv/uv" /usr/local/bin/uv
-install -m 0755 "${tmp_dir}/uv/uvx" /usr/local/bin/uvx
-
-log "installing Terraform ${TERRAFORM_VERSION}"
-curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${terraform_arch}.zip" \
-  -o "${tmp_dir}/terraform.zip"
-unzip -q "${tmp_dir}/terraform.zip" -d "${tmp_dir}/terraform"
-install -m 0755 "${tmp_dir}/terraform/terraform" /usr/local/bin/terraform
-
-log "installing stable VS Code"
-curl -fsSL "https://update.code.visualstudio.com/latest/linux-deb-${vscode_arch}/stable" \
-  -o "${tmp_dir}/vscode.deb"
-apt-get -o DPkg::Lock::Timeout=300 install -y "${tmp_dir}/vscode.deb"
 rm -rf /var/lib/apt/lists/*
 
 log "verifying installed versions"
-test "$(node --version)" = "v${NODE_VERSION}"
-test "$(pnpm --version)" = "${PNPM_VERSION}"
-test "$(python3 --version)" = "Python ${PYTHON_VERSION}"
-test "$(uv --version | awk '{print $2}')" = "${UV_VERSION}"
-test "$(terraform version -json | awk -F '\"' '/terraform_version/ { print $4 }')" = "${TERRAFORM_VERSION}"
-command -v code >/dev/null
+test "$(node --version)" = "v24.18.0"
+test "$(bun --version)" = "1.3.14"
+test "$(python3 --version)" = "Python 3.14.6"
+test "$(uv --version | awk '{print $2}')" = "0.11.28"
+test "$(terraform version -json | awk -F '\"' '/terraform_version/ { print $4 }')" = "1.15.8"
 command -v codex >/dev/null
 command -v playwright-cli >/dev/null
 playwright-cli install-browser --list | grep -q chromium
+playwright-cli open about:blank
+playwright-cli close
 test -f /home/agent/.agents/skills/playwright-cli/SKILL.md

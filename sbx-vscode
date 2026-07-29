@@ -270,6 +270,22 @@ printf '[sbx-vscode]   code --new-window --remote %q %q\n' "${REMOTE_AUTHORITY}"
 if [ "${AUTO_OPEN}" != "0" ]; then
   log "opening the workspace in local VS Code over SSH"
   code --new-window --remote "${REMOTE_AUTHORITY}" "${WORKSPACE}"
+
+  # Install the kit's common extensions into the Remote-SSH server after it
+  # has been bootstrapped. The image intentionally does not contain the VS
+  # Code desktop/server package, so this is best-effort and must not prevent
+  # the workspace from opening if a particular extension is unavailable.
+  extensions_file="${SCRIPT_DIR}/files/home/.config/vscode-in-sandbox/extensions.txt"
+  if [ -f "${extensions_file}" ]; then
+    while IFS= read -r extension_id; do
+      case "${extension_id}" in
+        ''|'#'*) continue ;;
+      esac
+      log "installing Remote-SSH extension ${extension_id}"
+      code --remote "${REMOTE_AUTHORITY}" --install-extension "${extension_id}" --force \
+        >/dev/null 2>&1 || log "warning: failed to install Remote-SSH extension ${extension_id}"
+    done < "${extensions_file}"
+  fi
 fi
 
 keepalive_pid=""

@@ -41,13 +41,14 @@ balanced設定には次のカテゴリが含まれます。
 ## 導入されるツール
 
 ```text
-Node.js 24.18.0
-pnpm 11.11.0
-Python 3.14.6
-uv 0.11.28
-Terraform 1.15.8
-Codex CLI（`@openai/codex`）
-VS Code stable（CLIを含む）
+mise 2026.7.11
+Node.js 24.18.0（mise）
+Bun 1.3.14（mise）
+Python 3.14.6（mise binary）
+uv 0.11.28（mise）
+Terraform 1.15.8（mise）
+Codex CLI 0.144.6（mise/npm）
+Playwright CLI 0.1.17（mise/npm）
 zsh / oh-my-zsh（theme: pmcgee）
 ```
 
@@ -120,7 +121,7 @@ cd /path/to/vscode-in-sandbox
 3. `sbx template load` でDocker Sandboxes側のローカルimage storeへ取り込む。
 4. load完了後に一時tarを削除する。
 
-remote registryへのpushは行いません。Node.js、pnpm、Python、uv、Terraform、VS Code、共通拡張はimageに入るため、sandbox起動のたびにinstallされません。buildしたhostのCPU architectureに対応するimageが作られます。
+remote registryへのpushは行いません。miseと固定版ツール、Playwright browserはimageに入るため、sandbox起動のたびにinstallされません。VS Code本体とRemote拡張はhostのVS Code/Remote-SSHが接続時に管理します。buildしたhostのCPU architectureに対応するimageが作られます。
 
 ARM64 imageのUbuntu packageは、`ports.ubuntu.com` ではなくUbuntu登録ミラーの `https://mirrors.ocf.berkeley.edu/ubuntu-ports` から取得します。これはtemplate build時だけの取得先であり、sandboxのnetwork whitelistは追加しません。
 
@@ -254,9 +255,12 @@ sbx secret rm -g openai
 ```text
 files/home/.vscode-server/data/Machine/settings.json
 files/home/.config/vscode-in-sandbox/extensions.txt
+files/etc/mise/config.toml
 ```
 
 変更後はtemplateをbuild/loadし直します。
+
+mise対象ツールのバージョンを更新するときは、`files/etc/mise/config.toml`を変更してtemplateを再buildします。通常のPATHはimageの固定版を使い、workspace内のmise設定では上書きしません。
 
 ```bash
 cd /path/to/vscode-in-sandbox
@@ -276,18 +280,16 @@ sbx kit validate .
 bash -n ./build-template.sh
 bash -n ./sbx-vscode
 bash -n ./files/home/.local/share/vscode-in-sandbox/install-tools.sh
-bash -n ./files/home/.local/share/vscode-in-sandbox/install-extensions.sh
 ```
 
 sandbox作成後は、実際に導入されたversionと拡張を確認します。
 
 ```bash
 sbx exec <sandbox-name> node --version
-sbx exec <sandbox-name> pnpm --version
+sbx exec <sandbox-name> bun --version
 sbx exec <sandbox-name> python3 --version
 sbx exec <sandbox-name> uv --version
 sbx exec <sandbox-name> terraform version
-sbx exec -u agent <sandbox-name> code --extensions-dir /home/agent/.vscode-server/extensions --list-extensions
 ssh sbx-<sandbox-name> -- id -un
 ```
 
@@ -295,7 +297,7 @@ ssh sbx-<sandbox-name> -- id -un
 
 ```text
 node:   v24.18.0
-pnpm:   11.11.0
+bun:    1.3.14
 python: Python 3.14.6
 uv:     uv 0.11.28
 terraform: 1.15.8
