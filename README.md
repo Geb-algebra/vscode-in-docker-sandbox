@@ -1,6 +1,6 @@
 # VS Code in a Codex Docker Sandbox
 
-Docker Sandboxes標準のCodex templateを土台に、VS Code Remote - SSHと共通開発環境を組み込んだローカルtemplateです。network egressだけは小さなmixin Kitで追加します。
+Docker Sandboxes標準のCodex templateを土台に、公式SSH accessを使うVS Code Remote - SSHと共通開発環境を組み込むmixin Kitです。
 
 このディレクトリは対象プロジェクトの中に置く必要はありません。`vscode-in-sandbox` と開発対象のworkspaceを別ディレクトリとして管理し、起動時にworkspaceのpathを指定します。
 
@@ -49,6 +49,7 @@ uv 0.11.28（mise）
 Terraform 1.15.8（mise）
 Codex CLI 0.144.6（mise/npm）
 Playwright CLI 0.1.17（mise/npm）
+OpenSSH client
 zsh / oh-my-zsh（theme: pmcgee）
 ```
 
@@ -68,7 +69,7 @@ Nord theme拡張はRemote側へinstallしません。`workbench.colorTheme: "Nor
 ## 前提条件
 
 - Docker Desktop
-- Docker Sandboxes / `sbx` CLI 0.34.0以降
+- Docker Sandboxes / `sbx` CLI 0.37.0以降
 - ローカルのVS Code
 - VS CodeのRemote - SSH拡張（`ms-vscode-remote.remote-ssh`）
 - hostのOpenSSH client
@@ -77,23 +78,20 @@ Nord theme拡張はRemote側へinstallしません。`workbench.colorTheme: "Nor
 
 ## Host側の初期設定
 
-Docker Sandboxesへloginし、global network policyをbalancedで初期化してから、Codex OAuth認証をhostへ保存します。
+Docker Sandboxesへloginし、global network policyをbalancedで初期化してから、公式SSH accessとCodex OAuth認証をhostへ設定します。
 
 ```bash
 sbx login
 sbx policy init balanced
+sbx setup ssh
 sbx secret set -g openai --oauth
 ```
 
 OAuth flowはhost上で実行されます。認証結果はOS Keychainに保存され、実tokenはsandboxへ渡されません。
 
-`sbx-vscode` の初回起動時には、sandbox接続専用のED25519 keyをhostの `~/.ssh/docker-sandbox-vscode_ed25519` に作成します。秘密鍵はhostにだけ保存され、workspace、sandbox、template、Kitにはコピーされません。公開鍵だけを各sandboxの `agent` userへ設定し、すべてのsandboxで同じkeyを共通利用します。
+`sbx setup ssh` はDocker Sandboxesが管理する `Host *.sbx` blockをhostのSSH client設定へ追加します。接続は `ProxyCommand` でlocalのDocker Sandboxes daemonへ中継され、network port、専用SSH key、sandbox内のSSH serverは使用しません。
 
-各sandbox内ではOpenSSH serverを起動し、`sbx ports` で22番をhostのloopback上のephemeral portへ公開します。sandboxごとの接続情報は `~/.ssh/config.d/docker-sandbox-vscode/` に保存され、`~/.ssh/config` からincludeされます。公開portがsandbox再起動時に変化した場合は、次回の `sbx-vscode` 起動時にconfigを更新します。
-
-SSH serverは公開鍵認証だけを許可します。SSH client configには `SendEnv` を設定しないため、host shellのAPI keyやtokenをsandboxへ転送しません。
-
-Docker Sandboxesのcredential proxyをSSH経由のVS Code拡張でも利用できるように、`sbx-vscode` はsandboxへ注入済みの `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` だけを `/home/agent/.ssh/environment` に保存します。sshdはこの3変数だけをSSH sessionへ渡します。値はsandbox起動時に毎回更新され、host shellの環境変数や実tokenは使用しません。
+公式設定の `SendEnv *` がhost環境変数を提示しても、daemonは `ssh.acceptEnv` allowlistに含まれる変数だけを受け入れます。Kitからallowlistを追加することはありません。
 
 global secretは新しく作成するsandboxにだけ適用されます。認証設定より前に作成したsandboxがある場合は、そのsandboxを削除して作り直してください。
 
@@ -105,25 +103,17 @@ global secretは新しく作成するsandboxにだけ適用されます。認証
 
 Codex拡張内でも追加のChatGPT loginは行わないでください。拡張独自の認証情報がsandbox内へ保存される可能性があります。
 
-## ローカルtemplateのbuild
+## Toolchainのinstallと一時workaround
 
-最初に一度、またはDockerfile・ツール・設定・拡張を変更したときに実行します。
+通常はcustom templateへtoolchainを焼き込みますが、sbx 0.37.xのrootfs regression [docker/sbx-releases#366](https://github.com/docker/sbx-releases/issues/366) を避けるため、現在のlauncherはsbx組み込みの `codex-docker` templateを使用します。`build-template.sh` は当面の起動手順では使用しません。
 
-```bash
-cd /path/to/vscode-in-sandbox
-./build-template.sh
-```
+Kitのmarker付きstartup hookが、sandbox新規作成時に固定版toolchain、Playwright browser、zsh、oh-my-zshを一度だけinstallします。startup hook自体は起動ごとに呼ばれますが、同じsandboxでは永続markerを確認して即終了するため、実installは再実行されません。`sbx rm`後の再作成時には再度installされます。
 
-このスクリプトは次の処理を行います。
+sbx 0.37.0では `commands.install` がKitの静的ファイル配置より先に実行され、同梱したlocal install scriptを参照できません。このため、静的ファイル配置後に呼ばれるstartup hookを使用し、launcherが完了markerを待ってからVS Codeを開きます。
 
-1. `local/vscode-codex:1` をDockerでbuildする。
-2. `vscode-in-sandbox/.vscode-codex-template.tmp.tar` へ一時的に `docker image save` する。
-3. `sbx template load` でDocker Sandboxes側のローカルimage storeへ取り込む。
-4. load完了後に一時tarを削除する。
+初回作成は時間がかかります。install logはsandbox内の `/home/agent/.local/state/vscode-in-sandbox/toolchain-install.log` に保存されます。Ubuntu packageは標準templateの公式sourceから取得します。Playwright browserをsandbox内でinstallするため、Kitは `cdn.playwright.dev:443` と `playwright.download.prss.microsoft.com:443` を許可します。
 
-remote registryへのpushは行いません。miseと固定版ツール、Playwright browserはimageに入るため、sandbox起動のたびにinstallされません。VS Code本体とRemote拡張はhostのVS Code/Remote-SSHが接続時に管理します。buildしたhostのCPU architectureに対応するimageが作られます。
-
-ARM64 imageのUbuntu packageは、`ports.ubuntu.com` ではなくUbuntu登録ミラーの `https://mirrors.ocf.berkeley.edu/ubuntu-ports` から取得します。これはtemplate build時だけの取得先であり、sandboxのnetwork whitelistは追加しません。
+背景と、#366修正後にcustom templateへ戻す範囲は [`docs/temporary-sbx-0.37-template-layer-workaround.md`](docs/temporary-sbx-0.37-template-layer-workaround.md) に記録しています。
 
 ## 起動方法
 
@@ -158,37 +148,43 @@ sbx-vscode
 
 起動スクリプトは次の処理を行います。
 
-1. host全体で共通利用するsandbox接続専用SSH keyを確認し、未作成の場合だけ生成する。
+1. `sbx` 0.37.0以降と、`sbx setup ssh` による公式SSH設定を確認する。
 2. workspaceのディレクトリ名（先頭10文字）と絶対pathのSHA-256 hash（先頭8文字）から `<dirname>-<hash>` 形式のsandbox名を生成する。同名ディレクトリでも絶対pathが異なれば別sandboxになる。sandbox名に使用できない文字がある場合は `-` に置き換える。
 3. workspaceがGit linked worktreeの場合、Gitの共通ディレクトリ（元リポジトリの `.git`）を自動検出する。
-4. 未作成の場合、ローカルtemplateとnetwork mixin Kitを使ってCodex sandboxを作成する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
+4. 未作成の場合、sbx組み込みの `codex-docker` templateとこのKitを使ってCodex sandboxを作成する。Kitのmarker付きstartup hookがtoolchainを一度だけ導入する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
 5. 既存の場合は同名sandboxを再利用する。
-6. sandboxへ公開鍵を設定してOpenSSH serverを起動し、22番をhost loopbackへ公開する。
-7. sandbox別の `sbx-<sandbox-name>` SSH aliasを更新し、mount済みworkspaceをVS Code Remote - SSHで開く。
-8. attachedなsandbox sessionをforegroundで維持し、`Ctrl+C`を受けたらsandboxを停止する。
+6. Docker Sandboxes公式の `<sandbox-name>.sbx` targetへ接続できることを確認する。
+7. toolchain installの完了markerを確認する。
+8. mount済みworkspaceをVS Code Remote - SSHで開き、共通拡張をinstallしてlauncherを終了する。
 
 Docker Sandboxesのdirect mountはhost workspaceをsandbox内でも同じ絶対pathへmountします。Codex agentとVS Codeは、どちらもこのmount先を使用します。`~/workspace` は使用しません。
 
 linked worktreeの判定には `git rev-parse --git-dir --git-common-dir` を使用します。worktree固有のGit directoryと共通Git directoryが異なる場合にだけ、共通 `.git` を追加mountします。commit、index、branchなどのGit管理情報を更新できるよう、この追加mountはread-writeです。元リポジトリの作業ツリー自体はmountしません。通常のGitリポジトリやGit管理外のworkspaceでは追加mountされません。
 
-既存sandboxのimageやmount構成は変更できません。このOpenSSH対応前に作成したsandbox、またはlinked worktree mount追加前に作成したsandboxでは、ログに表示されるsandbox名を確認してから削除し、再作成してください。
+既存sandboxのtemplate、Kit、mount構成は変更されません。自前OpenSSH版やcustom templateから作成したsandbox、またはlinked worktree mount追加前に作成したsandboxでは、ログに表示されるsandbox名を確認してから削除し、再作成してください。
 
 ```bash
 sbx rm <sandbox-name>
 sbx-vscode /path/to/linked-worktree
 ```
 
-起動ログには、hostから直接接続できる `ssh` コマンドと、mount済みworkspaceを開く `code` コマンドが表示されます。すべてのaliasが同じhost秘密鍵を使用します。GitHub accountやdevice loginは不要です。
+起動ログには、hostから直接接続できる `ssh` コマンドと、mount済みworkspaceを開く `code` コマンドが表示されます。
 
 ```bash
-ssh sbx-<sandbox-name>
-code --new-window --remote ssh-remote+sbx-<sandbox-name> /absolute/path/to/workspace
+ssh <sandbox-name>.sbx
+code --new-window --remote ssh-remote+<sandbox-name>.sbx /absolute/path/to/workspace
 ```
 
-GUIを自動起動せずコマンド表示だけにする場合は、`SBX_AUTO_OPEN=0` を指定します。どちらの場合も `sbx-vscode` はforegroundで起動し続けます。起動したterminalで `Ctrl+C` を入力すると、接続中のVS CodeとSSH sessionを終了してsandboxを停止します。
+GUIを自動起動せずコマンド表示だけにする場合は、`SBX_AUTO_OPEN=0` を指定します。どちらの場合も接続準備ができた時点で `sbx-vscode` は終了し、sandboxは明示的に停止するまで利用可能なままです。
 
 ```bash
 SBX_AUTO_OPEN=0 sbx-vscode /path/to/workspace
+```
+
+作業後はsandboxを停止します。stop/startではinstall済みtoolchainとVS Code Server stateが保持されます。
+
+```bash
+sbx stop <sandbox-name>
 ```
 
 ## 起動設定の上書き
@@ -198,7 +194,6 @@ SBX_AUTO_OPEN=0 sbx-vscode /path/to/workspace
 ```bash
 SBX_NAME=vsc-project \
 SBX_PROFILE=profile-name \
-SBX_TEMPLATE_NAME=local/vscode-codex:1 \
 SBX_AUTO_OPEN=0 \
 /path/to/vscode-in-sandbox/sbx-vscode /path/to/project
 ```
@@ -207,36 +202,72 @@ SBX_AUTO_OPEN=0 \
 SBX_NAME       sandbox名
 SBX_WORKSPACE  workspaceの絶対path。第1引数より優先される
 SBX_PROFILE    Docker Sandboxesのgovernance profile
-SBX_TEMPLATE_NAME  sbxへload済みのtemplate名
-SBX_AUTO_OPEN  `0` の場合はローカルVS Code自動起動だけを無効化する。sandboxは`Ctrl+C`まで起動し続ける
+SBX_TEMPLATE_NAME  任意のtemplate override。未指定時はsbx組み込みのCodex template
+SBX_AUTO_OPEN  `0` の場合はローカルVS Code自動起動だけを無効化する
+```
+
+`SBX_TEMPLATE_NAME` は検証用途に残しています。#366の影響下ではcustom templateを指定しないでください。
+
+### macOSでVS Codeが再接続を繰り返す場合
+
+local VS Codeのuser settingsへ次を追加します。
+
+```json
+{
+  "remote.SSH.useLocalServer": false
+}
 ```
 
 ## Codex拡張の認証制約
 
 SSH接続後のCodex拡張とRemote VS Codeのterminalで実行するCodex CLIは、どちらもDocker Sandboxesのhost-managed認証を使用します。拡張内で追加のChatGPT loginは行わないでください。
 
-認証に失敗する場合は、sandbox内へtokenを保存せず、まずSSH sessionにcredential proxyの環境変数が渡されているか確認します。
+認証に失敗する場合もsandbox内へtokenを保存せず、host側のOAuth設定とsandboxのnetwork policyを確認します。
 
 ```bash
-env | grep -E '^(HTTP_PROXY|HTTPS_PROXY|NO_PROXY)='
+sbx secret ls
+sbx policy ls --type network
 ```
 
-sshdの設定はtemplate imageへ含まれるため、この対応より前に作成したsandboxへは適用されません。templateを再build/loadして既存sandboxを削除し、`sbx-vscode` で作り直してください。
+自前OpenSSH版またはcustom templateで作成した既存sandboxには不要なsshd、22番port mapping、または不完全なcustom layerが残る可能性があります。既存sandboxを削除し、現在のlauncherで作り直してください。
 
 ```bash
-./build-template.sh
 sbx rm <sandbox-name>
 sbx-vscode /path/to/workspace
+```
+
+## 自前SSH版からの移行
+
+新しいsandboxで公式targetへ接続できることを確認します。
+
+```bash
+sbx setup ssh
+sbx rm <sandbox-name>
+sbx-vscode /path/to/workspace
+ssh <sandbox-name>.sbx
+```
+
+確認後、旧launcherがhostへ作成した次の専用ファイルとdirectoryを手動で削除できます。
+
+```text
+~/.ssh/docker-sandbox-vscode_ed25519
+~/.ssh/docker-sandbox-vscode_ed25519.pub
+~/.ssh/docker-sandbox-vscode_known_hosts
+~/.ssh/config.d/docker-sandbox-vscode/
+```
+
+さらに `~/.ssh/config` から次の1行だけを削除します。
+
+```sshconfig
+Include ~/.ssh/config.d/docker-sandbox-vscode/*.conf
 ```
 
 ## 永続化範囲
 
 - Codex OAuth: hostのOS Keychainに保存され、sandboxを削除しても残る
-- sandbox接続専用SSH秘密鍵: hostの `~/.ssh/docker-sandbox-vscode_ed25519` に保存され、すべてのsandboxで共通利用される
-- SSH公開鍵: 各sandboxの `/home/agent/.ssh/authorized_keys` に保存される
-- SSH client設定: hostの `~/.ssh/config.d/docker-sandbox-vscode/` と専用known_hostsに保存される
-- sandbox固有SSH host key: sandbox内に初回起動時に生成され、sandbox削除時に消える
-- imageへ焼き込んだツール・拡張・共通設定: sandboxを作り直してもtemplateから復元される
+- Docker Sandboxes公式SSH設定: hostの `~/.ssh/config` とDocker Sandboxes管理領域に保存される
+- Kitでinstallしたツール、Playwright browser、oh-my-zsh: sandbox内に保存され、stop/startをまたいで残る
+- Kitの静的ファイルと共通設定: sandbox作成時に配置される
 - VS Code Serverの実行時state: sandboxが存在する間はstop/startをまたいで残る
 
 認証とsandbox stateを削除するコマンド:
@@ -246,7 +277,7 @@ sbx rm <sandbox-name>
 sbx secret rm -g openai
 ```
 
-`sbx reset` はsandbox stateと保存済みsecretを削除するため、実行後はOAuth設定が再度必要です。host側の共通SSH keyとclient設定は残ります。
+`sbx reset` はsandbox stateと保存済みsecretを削除するため、実行後はOAuth設定が再度必要です。公式SSH設定は必要に応じて `sbx setup ssh` で再設定できます。
 
 ## 共通設定の変更
 
@@ -255,19 +286,10 @@ sbx secret rm -g openai
 ```text
 files/home/.vscode-server/data/Machine/settings.json
 files/home/.config/vscode-in-sandbox/extensions.txt
-files/etc/mise/config.toml
+files/home/.local/share/vscode-in-sandbox/mise-config.toml
 ```
 
-変更後はtemplateをbuild/loadし直します。
-
-mise対象ツールのバージョンを更新するときは、`files/etc/mise/config.toml`を変更してtemplateを再buildします。通常のPATHはimageの固定版を使い、workspace内のmise設定では上書きしません。
-
-```bash
-cd /path/to/vscode-in-sandbox
-./build-template.sh
-```
-
-既存sandboxは古いimage layerを使い続けるため、自動更新されません。反映するには既存sandboxを削除し、`sbx-vscode` で新規作成してください。workspace自体はhost側にあるため削除されませんが、sandbox内のVS Code Server実行時stateは失われます。host側の共通SSH keyは削除されません。
+変更後は既存sandboxを削除し、`sbx-vscode`で新規作成してください。Kitの静的ファイルはsandbox作成時に適用され、toolchainはmarker付きstartup hookからinstallされます。workspace自体はhost側にあるため削除されませんが、sandbox内のtoolchainとVS Code Server実行時stateは失われます。
 
 ## 検証
 
@@ -290,8 +312,13 @@ sbx exec <sandbox-name> bun --version
 sbx exec <sandbox-name> python3 --version
 sbx exec <sandbox-name> uv --version
 sbx exec <sandbox-name> terraform version
-ssh sbx-<sandbox-name> -- id -un
+sbx exec <sandbox-name> ssh -V
+ssh <sandbox-name>.sbx id -un
+sbx exec <sandbox-name> sh -c '! command -v sshd'
+sbx ports <sandbox-name>
 ```
+
+`sbx ports`に22番のmappingがないことも確認します。
 
 期待値:
 

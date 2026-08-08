@@ -9,6 +9,25 @@ if ! command -v sbx >/dev/null 2>&1; then
   exit 1
 fi
 
+sbx_version_output="$(sbx version 2>&1 || true)"
+sbx_client_version="$(
+  printf '%s\n' "${sbx_version_output}" \
+    | sed -nE 's/^(Client Version:|sbx version:)[[:space:]]*v?([0-9]+\.[0-9]+\.[0-9]+).*/\2/p' \
+    | sed -n '1p'
+)"
+if [ -z "${sbx_client_version}" ]; then
+  echo "Unable to determine the sbx client version. Docker Sandboxes 0.37.0 or later is required." >&2
+  exit 1
+fi
+
+IFS=. read -r sbx_version_major sbx_version_minor _ <<EOF
+${sbx_client_version}
+EOF
+if [ "${sbx_version_major}" -eq 0 ] && [ "${sbx_version_minor}" -lt 37 ]; then
+  printf 'Docker Sandboxes 0.37.0 or later is required; found %s.\n' "${sbx_client_version}" >&2
+  exit 1
+fi
+
 if ! command -v ssh >/dev/null 2>&1; then
   echo "ssh is required to connect VS Code to the sandbox." >&2
   exit 1
@@ -19,18 +38,16 @@ if ! command -v code >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! sbx ports --help >/dev/null 2>&1; then
-  echo "The installed sbx CLI does not support sandbox port publishing." >&2
-  exit 1
-fi
-
-if ! command -v ssh-keygen >/dev/null 2>&1; then
-  echo "ssh-keygen is required to create the dedicated sandbox SSH key." >&2
-  exit 1
-fi
-
 if ! code --list-extensions 2>/dev/null | grep -Fxiq 'ms-vscode-remote.remote-ssh'; then
   echo "The VS Code Remote - SSH extension is required (ms-vscode-remote.remote-ssh)." >&2
+  exit 1
+fi
+
+if ! ssh -G docker-sandbox-ssh-check.sbx 2>/dev/null \
+  | grep -Eq '^proxycommand .*sbx.* ssh proxy '; then
+  echo "Docker Sandboxes SSH access is not configured on this host." >&2
+  echo "Run this once, then retry:" >&2
+  echo "  sbx setup ssh" >&2
   exit 1
 fi
 
@@ -71,48 +88,33 @@ fi
 
 SANDBOX_NAME="${SBX_NAME:-${workspace_name}-${workspace_hash}}"
 PROFILE="${SBX_PROFILE:-}"
-TEMPLATE_NAME="${SBX_TEMPLATE_NAME:-local/vscode-codex:1}"
 AUTO_OPEN="${SBX_AUTO_OPEN:-1}"
-HOST_SSH_DIR="${HOME}/.ssh"
-SSH_KEY_PATH="${HOST_SSH_DIR}/docker-sandbox-vscode_ed25519"
-SSH_CONFIG_PATH="${HOST_SSH_DIR}/config"
-SSH_CONFIG_DIR="${HOST_SSH_DIR}/config.d/docker-sandbox-vscode"
-SSH_CONFIG_INCLUDE='Include ~/.ssh/config.d/docker-sandbox-vscode/*.conf'
-SSH_HOST_ALIAS="sbx-${SANDBOX_NAME}"
-SSH_KNOWN_HOSTS_PATH="${HOST_SSH_DIR}/docker-sandbox-vscode_known_hosts"
+SSH_HOST="${SANDBOX_NAME}.sbx"
+
+# BEGIN TEMPORARY WORKAROUND: docker/sbx-releases#366
+# An empty default lets sbx select its built-in codex-docker template. Custom
+# template layers are currently unreliable on sbx 0.37.x, so a marker-guarded
+# Kit startup hook installs tools once per sandbox instead. See:
+# docs/temporary-sbx-0.37-template-layer-workaround.md
+TEMPLATE_NAME="${SBX_TEMPLATE_NAME:-}"
+# END TEMPORARY WORKAROUND: docker/sbx-releases#366
 
 log() {
   printf '[sbx-vscode] %s\n' "$*" >&2
 }
-
-umask 077
-mkdir -p "${HOST_SSH_DIR}" "${SSH_CONFIG_DIR}"
-chmod 700 "${HOST_SSH_DIR}" "${SSH_CONFIG_DIR}"
-
-if [ ! -f "${SSH_KEY_PATH}" ]; then
-  if [ -e "${SSH_KEY_PATH}.pub" ]; then
-    printf 'SSH public key exists without its private key: %s.pub\n' "${SSH_KEY_PATH}" >&2
-    exit 1
-  fi
-  log "creating host-wide SSH key dedicated to Docker sandbox access"
-  ssh-keygen -q -t ed25519 -N '' -C 'docker-sandbox-vscode' -f "${SSH_KEY_PATH}"
-elif [ ! -f "${SSH_KEY_PATH}.pub" ]; then
-  log "recreating the missing public key from the host private key"
-  ssh-keygen -y -f "${SSH_KEY_PATH}" > "${SSH_KEY_PATH}.pub"
-fi
-chmod 600 "${SSH_KEY_PATH}"
-chmod 644 "${SSH_KEY_PATH}.pub"
 
 if [ -n "${GIT_COMMON_DIR}" ]; then
   log "linked worktree detected: ${WORKSPACE}"
   log "shared Git directory (read-write mount): ${GIT_COMMON_DIR}"
 fi
 
-created_sandbox=0
 if sbx ls -q | grep -Fqx "${SANDBOX_NAME}"; then
   log "reusing sandbox: ${SANDBOX_NAME}"
 else
-  create_args=(create --name "${SANDBOX_NAME}" --template "${TEMPLATE_NAME}" --kit "${SCRIPT_DIR}")
+  create_args=(create --name "${SANDBOX_NAME}" --kit "${SCRIPT_DIR}")
+  if [ -n "${TEMPLATE_NAME}" ]; then
+    create_args+=(--template "${TEMPLATE_NAME}")
+  fi
   if [ -n "${PROFILE}" ]; then
     create_args+=(--profile "${PROFILE}")
   fi
@@ -122,148 +124,99 @@ else
   fi
 
   log "creating Codex sandbox: ${SANDBOX_NAME}"
-  log "template: ${TEMPLATE_NAME}"
+  if [ -n "${TEMPLATE_NAME}" ]; then
+    log "template override: ${TEMPLATE_NAME}"
+  else
+    log "template: built-in codex-docker"
+  fi
   log "workspace: ${WORKSPACE}"
+  log "the Kit installs the pinned toolchain once during sandbox creation"
   log "Codex authentication must be configured on the host with:"
   log "  sbx secret set -g openai --oauth"
   sbx "${create_args[@]}"
-  created_sandbox=1
 fi
-
-if ! sbx exec -u root "${SANDBOX_NAME}" test -x /usr/sbin/sshd; then
-  log "OpenSSH server is missing from sandbox: ${SANDBOX_NAME}"
-  log "rebuild the template, then remove and recreate this sandbox:"
-  log "  ${SCRIPT_DIR}/build-template.sh"
-  log "  sbx rm ${SANDBOX_NAME}"
-  exit 1
-fi
-
-log "installing the shared host public key in sandbox: ${SANDBOX_NAME}"
-sbx exec -i -u root "${SANDBOX_NAME}" sh -c '
-  set -eu
-  install -d -m 0700 -o agent -g agent /home/agent/.ssh
-  cat > /home/agent/.ssh/authorized_keys
-  chown agent:agent /home/agent/.ssh/authorized_keys
-  chmod 0600 /home/agent/.ssh/authorized_keys
-
-  environment_tmp="$(mktemp /home/agent/.ssh/environment.tmp.XXXXXX)"
-  trap '\''rm -f "${environment_tmp}"'\'' EXIT HUP INT TERM
-  for variable_name in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
-    variable_value="$(printenv "${variable_name}" || true)"
-    if [ -n "${variable_value}" ]; then
-      printf "%s=%s\n" "${variable_name}" "${variable_value}" >> "${environment_tmp}"
-    fi
-  done
-  chown agent:agent "${environment_tmp}"
-  chmod 0600 "${environment_tmp}"
-  mv "${environment_tmp}" /home/agent/.ssh/environment
-  trap - EXIT HUP INT TERM
-
-  install -d -m 0755 /run/sshd
-  ssh-keygen -A
-' < "${SSH_KEY_PATH}.pub"
-
-if ! sbx exec -u root "${SANDBOX_NAME}" pgrep -x sshd >/dev/null 2>&1; then
-  log "starting OpenSSH server in sandbox: ${SANDBOX_NAME}"
-  sbx exec -u root "${SANDBOX_NAME}" /usr/sbin/sshd
-fi
-
-get_ssh_host_port() {
-  sbx ports "${SANDBOX_NAME}" --json | awk '
-    BEGIN { RS = "}" }
-    {
-      host_ip = ""
-      host_port = ""
-      sandbox_port = ""
-      protocol = ""
-      count = split($0, fields, ",")
-      for (i = 1; i <= count; i++) {
-        separator = index(fields[i], ":")
-        if (separator == 0) {
-          continue
-        }
-        key = substr(fields[i], 1, separator - 1)
-        value = substr(fields[i], separator + 1)
-        gsub(/[][{}[:space:]"]/, "", key)
-        gsub(/[][{}[:space:]"]/, "", value)
-        if (key == "host_ip") host_ip = value
-        if (key == "host_port") host_port = value
-        if (key == "sandbox_port") sandbox_port = value
-        if (key == "protocol") protocol = value
-      }
-      if (host_ip == "127.0.0.1" && sandbox_port == "22" && protocol == "tcp4") {
-        print host_port
-        exit
-      }
-    }
-  '
-}
-
-SSH_HOST_PORT="$(get_ssh_host_port)"
-if [ -z "${SSH_HOST_PORT}" ]; then
-  log "publishing sandbox SSH port on host loopback"
-  sbx ports "${SANDBOX_NAME}" --publish 22/tcp4
-  SSH_HOST_PORT="$(get_ssh_host_port)"
-fi
-if [ -z "${SSH_HOST_PORT}" ]; then
-  log "failed to determine the published host port for sandbox SSH"
-  exit 1
-fi
-
-if [ ! -f "${SSH_CONFIG_PATH}" ]; then
-  touch "${SSH_CONFIG_PATH}"
-  chmod 600 "${SSH_CONFIG_PATH}"
-fi
-if ! grep -Fqx "${SSH_CONFIG_INCLUDE}" "${SSH_CONFIG_PATH}"; then
-  ssh_config_tmp="$(mktemp "${SSH_CONFIG_PATH}.tmp.XXXXXX")"
-  {
-    printf '%s\n\n' "${SSH_CONFIG_INCLUDE}"
-    cat "${SSH_CONFIG_PATH}"
-  } > "${ssh_config_tmp}"
-  chmod 600 "${ssh_config_tmp}"
-  mv "${ssh_config_tmp}" "${SSH_CONFIG_PATH}"
-fi
-
-SSH_CONFIG_FRAGMENT="${SSH_CONFIG_DIR}/${SANDBOX_NAME}.conf"
-if [ "${created_sandbox}" = "1" ] && [ -f "${SSH_KNOWN_HOSTS_PATH}" ]; then
-  ssh-keygen -q -R "docker-sandbox-${SANDBOX_NAME}" -f "${SSH_KNOWN_HOSTS_PATH}" >/dev/null
-fi
-ssh_fragment_tmp="$(mktemp "${SSH_CONFIG_FRAGMENT}.tmp.XXXXXX")"
-{
-  printf 'Host %s\n' "${SSH_HOST_ALIAS}"
-  printf '  HostName 127.0.0.1\n'
-  printf '  Port %s\n' "${SSH_HOST_PORT}"
-  printf '  User agent\n'
-  printf '  IdentityFile "%s"\n' "${SSH_KEY_PATH}"
-  printf '  IdentitiesOnly yes\n'
-  printf '  ForwardAgent no\n'
-  printf '  HostKeyAlias docker-sandbox-%s\n' "${SANDBOX_NAME}"
-  printf '  UserKnownHostsFile "%s"\n' "${SSH_KNOWN_HOSTS_PATH}"
-  printf '  StrictHostKeyChecking accept-new\n'
-  printf '  UpdateHostKeys no\n'
-  printf '  LogLevel ERROR\n'
-} > "${ssh_fragment_tmp}"
-chmod 600 "${ssh_fragment_tmp}"
-mv "${ssh_fragment_tmp}" "${SSH_CONFIG_FRAGMENT}"
 
 ssh_ready=0
 for _ in $(seq 1 30); do
-  if ssh -o BatchMode=yes -o ConnectTimeout=1 "${SSH_HOST_ALIAS}" true >/dev/null 2>&1; then
+  if ssh -o BatchMode=yes -o ConnectTimeout=1 "${SSH_HOST}" true >/dev/null 2>&1; then
     ssh_ready=1
     break
   fi
   sleep 1
 done
 if [ "${ssh_ready}" != "1" ]; then
-  log "OpenSSH server did not become ready: ${SSH_HOST_ALIAS}"
+  log "Docker Sandboxes SSH access did not become ready: ${SSH_HOST}"
+  log "ensure Docker Sandboxes 0.37.0 or later is installed and run:"
+  log "  sbx setup ssh"
   exit 1
 fi
 
-REMOTE_AUTHORITY="ssh-remote+${SSH_HOST_ALIAS}"
+# BEGIN TEMPORARY WORKAROUND: docker/sbx-releases#366
+# The startup hook can run concurrently with container startup. Wait for its
+# persistent result before opening VS Code. Remove this block with the matching
+# spec.yaml workaround after following the workaround memo.
+toolchain_ready="/home/agent/.local/state/vscode-in-sandbox/toolchain.ready"
+toolchain_failed="/home/agent/.local/state/vscode-in-sandbox/toolchain.failed"
+toolchain_script="/home/agent/.local/share/vscode-in-sandbox/install-toolchain-once.sh"
+toolchain_state=""
 
-log "sandbox SSH target: ${SSH_HOST_ALIAS}"
+for toolchain_wait_seconds in $(seq 0 900); do
+  toolchain_state="$(
+    ssh -o BatchMode=yes "${SSH_HOST}" "
+      if [ -f '${toolchain_ready}' ]; then
+        printf ready
+      elif [ -f '${toolchain_failed}' ]; then
+        printf failed
+      elif [ ! -f '${toolchain_script}' ]; then
+        printf unavailable
+      else
+        printf installing
+      fi
+    " 2>/dev/null || true
+  )"
+
+  case "${toolchain_state}" in
+    ready)
+      break
+      ;;
+    failed)
+      log "sandbox toolchain installation failed"
+      ssh -o BatchMode=yes "${SSH_HOST}" \
+        "cat '${toolchain_failed}'; tail -100 /home/agent/.local/state/vscode-in-sandbox/toolchain-install.log" >&2 || true
+      exit 1
+      ;;
+    unavailable)
+      log "this existing sandbox was not created with the current Kit"
+      log "remove and recreate it:"
+      printf '[sbx-vscode]   sbx rm %q\n' "${SANDBOX_NAME}" >&2
+      exit 1
+      ;;
+    installing)
+      if [ $((toolchain_wait_seconds % 10)) -eq 0 ]; then
+        log "waiting for sandbox toolchain installation (${toolchain_wait_seconds}s)"
+      fi
+      sleep 1
+      ;;
+    *)
+      printf 'Unexpected toolchain installation state: %s\n' "${toolchain_state}" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [ "${toolchain_state}" != "ready" ]; then
+  log "timed out waiting for sandbox toolchain installation"
+  ssh -o BatchMode=yes "${SSH_HOST}" \
+    "tail -100 /home/agent/.local/state/vscode-in-sandbox/toolchain-install.log" >&2 || true
+  exit 1
+fi
+# END TEMPORARY WORKAROUND: docker/sbx-releases#366
+
+REMOTE_AUTHORITY="ssh-remote+${SSH_HOST}"
+
+log "sandbox SSH target: ${SSH_HOST}"
 log "connect from the host with:"
-printf '[sbx-vscode]   ssh %q\n' "${SSH_HOST_ALIAS}" >&2
+printf '[sbx-vscode]   ssh %q\n' "${SSH_HOST}" >&2
 log "open the mounted workspace in VS Code with:"
 printf '[sbx-vscode]   code --new-window --remote %q %q\n' "${REMOTE_AUTHORITY}" "${WORKSPACE}" >&2
 
@@ -288,25 +241,6 @@ if [ "${AUTO_OPEN}" != "0" ]; then
   fi
 fi
 
-keepalive_pid=""
-
-stop_sandbox() {
-  status="$?"
-  trap - EXIT INT TERM
-  if [ -n "${keepalive_pid}" ] && kill -0 "${keepalive_pid}" >/dev/null 2>&1; then
-    kill "${keepalive_pid}" >/dev/null 2>&1 || true
-    wait "${keepalive_pid}" 2>/dev/null || true
-  fi
-  log "stopping sandbox: ${SANDBOX_NAME}"
-  sbx stop "${SANDBOX_NAME}" >/dev/null 2>&1 || true
-  exit "${status}"
-}
-
-trap stop_sandbox EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-log "sandbox is running; press Ctrl+C to stop it"
-sbx exec -i -u agent "${SANDBOX_NAME}" tail -f /dev/null &
-keepalive_pid="$!"
-wait "${keepalive_pid}"
+log "launcher finished; the sandbox remains available"
+log "stop it when finished with:"
+printf '[sbx-vscode]   sbx stop %q\n' "${SANDBOX_NAME}" >&2

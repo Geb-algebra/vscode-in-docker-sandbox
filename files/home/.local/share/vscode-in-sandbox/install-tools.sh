@@ -43,25 +43,18 @@ esac
 export DEBIAN_FRONTEND=noninteractive
 log "installing system build dependencies"
 wait_for_apt
-find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec \
-  sed -i \
-    -e 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.ocf.berkeley.edu/ubuntu-ports|g' \
-    -e 's|https://ports.ubuntu.com/ubuntu-ports|https://mirrors.ocf.berkeley.edu/ubuntu-ports|g' \
-    -e 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' \
-    -e 's|http://security.ubuntu.com|https://security.ubuntu.com|g' \
-    {} +
+install -D -m 0644 \
+  /home/agent/.local/share/vscode-in-sandbox/mise-config.toml \
+  /etc/mise/config.toml
 apt-get -o DPkg::Lock::Timeout=300 update
 apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
   build-essential \
   ca-certificates \
   curl \
   git \
-  openssh-server \
+  openssh-client \
   pkg-config \
   zsh
-
-# Generate unique host keys when each sandbox first starts, not in the shared image.
-rm -f /etc/ssh/ssh_host_*
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
@@ -79,6 +72,12 @@ for tool_bin in node npm npx corepack bun python python3 pip3 uv uvx terraform c
   ln -sfn "${tool_path}" "/usr/local/bin/${tool_bin}"
 done
 
+# The built-in codex-docker template puts its npm-global bin directory before
+# /usr/local/bin. Replace only its Codex launcher so the pinned mise version is
+# also used by SSH sessions and subsequent agent starts.
+codex_path="$(MISE_SYSTEM_DATA_DIR=/usr/local/share/mise mise which codex)"
+ln -sfn "${codex_path}" /usr/local/share/npm-global/bin/codex
+
 log "installing Playwright browser"
 export PLAYWRIGHT_BROWSERS_PATH="/ms-playwright"
 mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"
@@ -90,9 +89,17 @@ install -d -m 0755 -o agent -g agent /home/agent/.agents/skills
 playwright_package_dir="$(MISE_SYSTEM_DATA_DIR=/usr/local/share/mise mise where 'npm:@playwright/cli')"
 playwright_skill_dir="$(find "${playwright_package_dir}" -type d -path '*/skills/playwright-cli' -print -quit)"
 test -n "${playwright_skill_dir}"
+rm -rf /home/agent/.agents/skills/playwright-cli
 cp -a "${playwright_skill_dir}" \
   /home/agent/.agents/skills/
 chown -R agent:agent /home/agent/.agents/skills/playwright-cli
+
+log "installing oh-my-zsh"
+if [ ! -f /home/agent/.oh-my-zsh/oh-my-zsh.sh ]; then
+  rm -rf /home/agent/.oh-my-zsh
+  git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /home/agent/.oh-my-zsh
+fi
+chown -R agent:agent /home/agent/.oh-my-zsh
 
 rm -rf /var/lib/apt/lists/*
 
@@ -102,9 +109,7 @@ test "$(bun --version)" = "1.3.14"
 test "$(python3 --version)" = "Python 3.14.6"
 test "$(uv --version | awk '{print $2}')" = "0.11.28"
 test "$(terraform version -json | awk -F '\"' '/terraform_version/ { print $4 }')" = "1.15.8"
-command -v codex >/dev/null
+test "$(codex --version)" = "codex-cli 0.144.6"
 command -v playwright-cli >/dev/null
 playwright-cli install-browser --list | grep -q chromium
-playwright-cli open about:blank
-playwright-cli close
 test -f /home/agent/.agents/skills/playwright-cli/SKILL.md
