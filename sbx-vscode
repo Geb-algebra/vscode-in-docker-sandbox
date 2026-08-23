@@ -1,8 +1,57 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat >&2 <<'EOF'
+Usage: sbx-vscode [--no-firewall] [--] [WORKSPACE]
+
+Options:
+  --no-firewall  Allow all outbound network traffic for this sandbox.
+  -h, --help     Show this help.
+EOF
+}
+
+NO_FIREWALL=0
+positional_args=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-firewall)
+      NO_FIREWALL=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      while [ "$#" -gt 0 ]; do
+        positional_args+=("$1")
+        shift
+      done
+      break
+      ;;
+    -*)
+      printf 'Unknown option: %s\n' "$1" >&2
+      usage
+      exit 2
+      ;;
+    *)
+      positional_args+=("$1")
+      ;;
+  esac
+  shift
+done
+
+if [ "${#positional_args[@]}" -gt 1 ]; then
+  echo "Only one workspace may be specified." >&2
+  usage
+  exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE="${SBX_WORKSPACE:-${1:-$PWD}}"
+workspace_arg="${positional_args[0]:-$PWD}"
+WORKSPACE="${SBX_WORKSPACE:-${workspace_arg}}"
 
 if ! command -v sbx >/dev/null 2>&1; then
   echo "sbx is required to run the VS Code sandbox." >&2
@@ -81,15 +130,24 @@ else
   exit 1
 fi
 
-workspace_name="$(basename "${WORKSPACE}" | sed -E 's/[^A-Za-z0-9-]+/-/g; s/^-+//; s/-+$//' | cut -c1-10 | sed -E 's/-+$//')"
+workspace_name_limit=10
+sandbox_name_prefix=""
+if [ "${NO_FIREWALL}" = "1" ]; then
+  workspace_name_limit=7
+  sandbox_name_prefix="nf-"
+fi
+
+workspace_name="$(basename "${WORKSPACE}" | sed -E 's/[^A-Za-z0-9-]+/-/g; s/^-+//; s/-+$//')"
 if [ -z "${workspace_name}" ]; then
   workspace_name="workspace"
 fi
+workspace_name="$(printf '%s' "${workspace_name}" | cut -c "1-${workspace_name_limit}" | sed -E 's/-+$//')"
 
-SANDBOX_NAME="${SBX_NAME:-${workspace_name}-${workspace_hash}}"
+SANDBOX_NAME="${SBX_NAME:-${sandbox_name_prefix}${workspace_name}-${workspace_hash}}"
 PROFILE="${SBX_PROFILE:-}"
 AUTO_OPEN="${SBX_AUTO_OPEN:-1}"
 SSH_HOST="${SANDBOX_NAME}.sbx"
+NO_FIREWALL_KIT="${SCRIPT_DIR}/kits/no-firewall"
 
 # BEGIN TEMPORARY WORKAROUND: docker/sbx-releases#366
 # An empty default lets sbx select its built-in codex-docker template. Custom
@@ -103,6 +161,11 @@ log() {
   printf '[sbx-vscode] %s\n' "$*" >&2
 }
 
+if [ "${NO_FIREWALL}" = "1" ]; then
+  log "WARNING: all outbound network traffic is allowed for ${SANDBOX_NAME}"
+  log "organization governance and sandbox profile deny rules still take precedence"
+fi
+
 if [ -n "${GIT_COMMON_DIR}" ]; then
   log "linked worktree detected: ${WORKSPACE}"
   log "shared Git directory (read-write mount): ${GIT_COMMON_DIR}"
@@ -112,6 +175,9 @@ if sbx ls -q | grep -Fqx "${SANDBOX_NAME}"; then
   log "reusing sandbox: ${SANDBOX_NAME}"
 else
   create_args=(create --name "${SANDBOX_NAME}" --kit "${SCRIPT_DIR}")
+  if [ "${NO_FIREWALL}" = "1" ]; then
+    create_args+=(--kit "${NO_FIREWALL_KIT}")
+  fi
   if [ -n "${TEMPLATE_NAME}" ]; then
     create_args+=(--template "${TEMPLATE_NAME}")
   fi

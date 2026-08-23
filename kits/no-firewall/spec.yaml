@@ -1,0 +1,10 @@
+schemaVersion: "1"
+kind: mixin
+name: vscode-in-docker-sandbox-no-firewall
+displayName: Unrestricted outbound network access
+description: Allows all outbound network traffic for a sandbox.
+
+caps:
+  network:
+    allow:
+      - "**"

@@ -38,6 +38,8 @@ balanced設定には次のカテゴリが含まれます。
 
 `spec.yaml` の `caps.network.allow` には、balancedでカバーされないVS Codeとツール導入用domainだけを追加しています。Kitにはdeny ruleはありませんが、組織のgovernance policyやsandbox profileで設定されたdeny ruleがある場合は、そちらが優先されます。
 
+`--no-firewall` を指定したsandboxには、専用mixin Kitから `**` のallow ruleを追加し、すべてのoutbound network trafficを許可します。この指定はsandbox固有であり、hostのglobal `balanced` policyや通常版sandboxのpolicyは変更しません。Docker Sandboxesの通信経路自体を迂回するものではなく、組織のgovernance policyやsandbox profileのdeny ruleは引き続き優先されます。
+
 ## 導入されるツール
 
 ```text
@@ -49,6 +51,7 @@ uv 0.11.28（mise）
 Terraform 1.15.8（mise）
 Codex CLI 0.144.6（mise/npm）
 Playwright CLI 0.1.17（mise/npm）
+pre-commit（Ubuntu package）
 OpenSSH client
 zsh / oh-my-zsh（theme: pmcgee）
 ```
@@ -132,6 +135,24 @@ cd /path/to/project
 /path/to/vscode-in-sandbox/sbx-vscode
 ```
 
+### Firewallなしで起動する
+
+任意のhostへのoutbound network trafficを許可する場合は、`--no-firewall` を指定します。通常版とは別のsandboxが作成されます。
+
+```bash
+sbx-vscode --no-firewall /path/to/project
+```
+
+firewallなし版の自動生成名は `nf-<dirname>-<hash>` 形式です。directory名は先頭7文字、絶対pathのSHA-256 hashは先頭8文字を使うため、最大19文字に収まります。たとえば通常版が `my-project-a1b2c3d4` の場合、firewallなし版は `nf-my-proj-a1b2c3d4` となり、両方を共存させられます。
+
+`SBX_NAME` を指定した場合は、その値を切り詰めたりprefixを付けたりせず、最終的なsandbox名として使用します。通常版と共存させる場合は、異なる名前を明示してください。
+
+```bash
+SBX_NAME=project-nf sbx-vscode --no-firewall /path/to/project
+```
+
+起動時には、全outboundを許可していることを警告としてログへ表示します。
+
 頻繁に利用する場合は、起動スクリプトをPATH上へsymlinkできます。
 
 ```bash
@@ -149,9 +170,9 @@ sbx-vscode
 起動スクリプトは次の処理を行います。
 
 1. `sbx` 0.37.0以降と、`sbx setup ssh` による公式SSH設定を確認する。
-2. workspaceのディレクトリ名（先頭10文字）と絶対pathのSHA-256 hash（先頭8文字）から `<dirname>-<hash>` 形式のsandbox名を生成する。同名ディレクトリでも絶対pathが異なれば別sandboxになる。sandbox名に使用できない文字がある場合は `-` に置き換える。
+2. 通常版ではworkspaceのディレクトリ名（先頭10文字）と絶対pathのSHA-256 hash（先頭8文字）から `<dirname>-<hash>` 形式のsandbox名を生成する。firewallなし版では `nf-<dirname先頭7文字>-<hash先頭8文字>` 形式にする。同名ディレクトリでも絶対pathが異なれば別sandboxになる。sandbox名に使用できない文字がある場合は `-` に置き換える。
 3. workspaceがGit linked worktreeの場合、Gitの共通ディレクトリ（元リポジトリの `.git`）を自動検出する。
-4. 未作成の場合、sbx組み込みの `codex-docker` templateとこのKitを使ってCodex sandboxを作成する。Kitのmarker付きstartup hookがtoolchainを一度だけ導入する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
+4. 未作成の場合、sbx組み込みの `codex-docker` templateとこのKitを使ってCodex sandboxを作成する。firewallなし版では全outboundを許可する専用Kitも追加する。Kitのmarker付きstartup hookがtoolchainを一度だけ導入する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
 5. 既存の場合は同名sandboxを再利用する。
 6. Docker Sandboxes公式の `<sandbox-name>.sbx` targetへ接続できることを確認する。
 7. toolchain installの完了markerを確認する。
@@ -205,6 +226,8 @@ SBX_PROFILE    Docker Sandboxesのgovernance profile
 SBX_TEMPLATE_NAME  任意のtemplate override。未指定時はsbx組み込みのCodex template
 SBX_AUTO_OPEN  `0` の場合はローカルVS Code自動起動だけを無効化する
 ```
+
+`--no-firewall` と `SBX_NAME` を併用した場合、`SBX_NAME` はそのまま最終名になります。通常版のsandbox名を指定すると既存の通常版sandboxが再利用されるため、firewallなし版には専用の名前を指定してください。
 
 `SBX_TEMPLATE_NAME` は検証用途に残しています。#366の影響下ではcustom templateを指定しないでください。
 
@@ -312,6 +335,7 @@ sbx exec <sandbox-name> bun --version
 sbx exec <sandbox-name> python3 --version
 sbx exec <sandbox-name> uv --version
 sbx exec <sandbox-name> terraform version
+sbx exec <sandbox-name> pre-commit --version
 sbx exec <sandbox-name> ssh -V
 ssh <sandbox-name>.sbx id -un
 sbx exec <sandbox-name> sh -c '! command -v sshd'

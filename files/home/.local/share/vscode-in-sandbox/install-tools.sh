@@ -53,6 +53,7 @@ apt-get -o DPkg::Lock::Timeout=300 install -y --no-install-recommends \
   curl \
   git \
   openssh-client \
+  pre-commit \
   pkg-config \
   zsh
 
@@ -110,6 +111,7 @@ test "$(python3 --version)" = "Python 3.14.6"
 test "$(uv --version | awk '{print $2}')" = "0.11.28"
 test "$(terraform version -json | awk -F '\"' '/terraform_version/ { print $4 }')" = "1.15.8"
 test "$(codex --version)" = "codex-cli 0.144.6"
+command -v pre-commit >/dev/null
 command -v playwright-cli >/dev/null
 playwright-cli install-browser --list | grep -q chromium
 test -f /home/agent/.agents/skills/playwright-cli/SKILL.md
