@@ -79,6 +79,15 @@ Nord theme拡張はRemote側へinstallしません。`workbench.colorTheme: "Nor
 - Docker account
 - Codexを利用できるOpenAI account
 
+初回利用時とtool version変更時には、Dockerでnative architecture用のtoolchain artifactを生成します。
+
+```bash
+cd /path/to/vscode-in-sandbox
+./build-toolchain-artifact.sh
+```
+
+生成物はKit直下の `artifacts/` に保存されます。数百MB規模になるためGit管理外です。sbx 0.37ではKit static fileへ大容量binaryを投入できないため、launcherがartifact directoryを追加direct mountします。このmountはsbxのworkspace mount仕様上read-writeですが、startup hookはSHA-256検証後の読み取りにだけ使用します。artifact directoryにはcredentialsやprivate filesを置かないでください。
+
 ## Host側の初期設定
 
 Docker Sandboxesへloginし、global network policyをbalancedで初期化してから、公式SSH accessとCodex OAuth認証をhostへ設定します。
@@ -110,11 +119,19 @@ Codex拡張内でも追加のChatGPT loginは行わないでください。拡�
 
 通常はcustom templateへtoolchainを焼き込みますが、sbx 0.37.xのrootfs regression [docker/sbx-releases#366](https://github.com/docker/sbx-releases/issues/366) を避けるため、現在のlauncherはsbx組み込みの `codex-docker` templateを使用します。`build-template.sh` は当面の起動手順では使用しません。
 
-Kitのmarker付きstartup hookが、sandbox新規作成時に固定版toolchain、Playwright browser、zsh、oh-my-zshを一度だけinstallします。startup hook自体は起動ごとに呼ばれますが、同じsandboxでは永続markerを確認して即終了するため、実installは再実行されません。`sbx rm`後の再作成時には再度installされます。
+ローカルDockerで、mise toolchain、Playwright Chromium、Playwright CLI skill、oh-my-zshを完成済みartifactとして生成します。Kitのmarker付きstartup hookは、sandbox新規作成時にartifactを検証・展開し、Ubuntu runtime packageとPlaywrightのsystem dependencyだけをaptで導入します。sandbox内ではmise install、browser download、oh-my-zsh cloneを行いません。startup hook自体は起動ごとに呼ばれますが、同じsandboxでは永続markerを確認して即終了します。
 
 sbx 0.37.0では `commands.install` がKitの静的ファイル配置より先に実行され、同梱したlocal install scriptを参照できません。このため、静的ファイル配置後に呼ばれるstartup hookを使用し、launcherが完了markerを待ってからVS Codeを開きます。
 
-初回作成は時間がかかります。install logはsandbox内の `/home/agent/.local/state/vscode-in-sandbox/toolchain-install.log` に保存されます。Ubuntu packageは標準templateの公式sourceから取得します。Playwright browserをsandbox内でinstallするため、Kitは `cdn.playwright.dev:443` と `playwright.download.prss.microsoft.com:443` を許可します。
+install logはsandbox内の `/home/agent/.local/state/vscode-in-sandbox/toolchain-install.log` に保存されます。起動時のnetwork installは、標準templateの公式sourceから取得するapt packageだけです。artifactのchecksum不一致、architecture不一致、想定外pathは展開前にエラーになります。
+
+`mise-config.toml`、mise自体のversion、またはartifactに含めるツールを変更した場合は、artifactを再生成して既存sandboxを削除してください。
+
+```bash
+./build-toolchain-artifact.sh
+sbx rm <sandbox-name>
+sbx-vscode /path/to/workspace
+```
 
 背景と、#366修正後にcustom templateへ戻す範囲は [`docs/temporary-sbx-0.37-template-layer-workaround.md`](docs/temporary-sbx-0.37-template-layer-workaround.md) に記録しています。
 
@@ -172,7 +189,7 @@ sbx-vscode
 1. `sbx` 0.37.0以降と、`sbx setup ssh` による公式SSH設定を確認する。
 2. 通常版ではworkspaceのディレクトリ名（先頭10文字）と絶対pathのSHA-256 hash（先頭8文字）から `<dirname>-<hash>` 形式のsandbox名を生成する。firewallなし版では `nf-<dirname先頭7文字>-<hash先頭8文字>` 形式にする。同名ディレクトリでも絶対pathが異なれば別sandboxになる。sandbox名に使用できない文字がある場合は `-` に置き換える。
 3. workspaceがGit linked worktreeの場合、Gitの共通ディレクトリ（元リポジトリの `.git`）を自動検出する。
-4. 未作成の場合、sbx組み込みの `codex-docker` templateとこのKitを使ってCodex sandboxを作成する。firewallなし版では全outboundを許可する専用Kitも追加する。Kitのmarker付きstartup hookがtoolchainを一度だけ導入する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
+4. 未作成の場合、native architecture用artifactとchecksumを検証し、artifact directoryを追加mountして、sbx組み込みの `codex-docker` templateとこのKitを使ってCodex sandboxを作成する。firewallなし版では全outboundを許可する専用Kitも追加する。Kitのmarker付きstartup hookがartifactを展開し、runtime packageを一度だけ導入する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
 5. 既存の場合は同名sandboxを再利用する。
 6. Docker Sandboxes公式の `<sandbox-name>.sbx` targetへ接続できることを確認する。
 7. toolchain installの完了markerを確認する。
@@ -289,7 +306,7 @@ Include ~/.ssh/config.d/docker-sandbox-vscode/*.conf
 
 - Codex OAuth: hostのOS Keychainに保存され、sandboxを削除しても残る
 - Docker Sandboxes公式SSH設定: hostの `~/.ssh/config` とDocker Sandboxes管理領域に保存される
-- Kitでinstallしたツール、Playwright browser、oh-my-zsh: sandbox内に保存され、stop/startをまたいで残る
+- Kit artifactから展開したツール、Playwright browser、oh-my-zsh: sandbox内に保存され、stop/startをまたいで残る
 - Kitの静的ファイルと共通設定: sandbox作成時に配置される
 - VS Code Serverの実行時state: sandboxが存在する間はstop/startをまたいで残る
 
@@ -312,7 +329,7 @@ files/home/.config/vscode-in-sandbox/extensions.txt
 files/home/.local/share/vscode-in-sandbox/mise-config.toml
 ```
 
-変更後は既存sandboxを削除し、`sbx-vscode`で新規作成してください。Kitの静的ファイルはsandbox作成時に適用され、toolchainはmarker付きstartup hookからinstallされます。workspace自体はhost側にあるため削除されませんが、sandbox内のtoolchainとVS Code Server実行時stateは失われます。
+toolchain設定の変更後は `./build-toolchain-artifact.sh` を実行し、既存sandboxを削除してから`sbx-vscode`で新規作成してください。Kitの静的ファイルとartifactはsandbox作成時に適用されます。workspace自体はhost側にあるため削除されませんが、sandbox内のtoolchainとVS Code Server実行時stateは失われます。
 
 ## 検証
 
@@ -322,9 +339,19 @@ Kitディレクトリで静的検証を実行します。
 cd /path/to/vscode-in-sandbox
 
 sbx kit validate .
+bash -n ./build-toolchain-artifact.sh
 bash -n ./build-template.sh
 bash -n ./sbx-vscode
+bash -n ./scripts/build-toolchain-root.sh
 bash -n ./files/home/.local/share/vscode-in-sandbox/install-tools.sh
+```
+
+artifactを含む完全な検証では、生成後にarchiveの必須pathとchecksumも確認します。
+
+```bash
+./build-toolchain-artifact.sh
+cd artifacts
+shasum -a 256 -c toolchain-linux-arm64.tar.zst.sha256
 ```
 
 sandbox作成後は、実際に導入されたversionと拡張を確認します。

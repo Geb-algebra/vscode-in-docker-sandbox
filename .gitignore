@@ -1,1 +1,4 @@
 .DS_Store
+artifacts/*
+!artifacts/.gitkeep
+files/home/.local/share/vscode-in-sandbox/artifact-path

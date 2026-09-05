@@ -1,0 +1,14 @@
+FROM docker/sandbox-templates:codex-docker
+
+USER root
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+ENV PLAYWRIGHT_MCP_BROWSER=chromium
+
+COPY files/home/.local/share/vscode-in-sandbox/mise-config.toml /home/agent/.local/share/vscode-in-sandbox/mise-config.toml
+COPY scripts/build-toolchain-root.sh /usr/local/src/vscode-in-sandbox/build-toolchain-root.sh
+
+RUN bash /usr/local/src/vscode-in-sandbox/build-toolchain-root.sh
+
+ENTRYPOINT ["tar", "--zstd", "-cf", "/out/toolchain.tar.zst", "-C", "/artifact-root"]
+CMD ["usr", "ms-playwright", "home"]
