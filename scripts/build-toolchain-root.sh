@@ -36,15 +36,9 @@ mkdir -p /ms-playwright
 playwright_cli="$(mise which playwright-cli)"
 "${playwright_cli}" install-browser chromium
 
-install -d -m 0755 -o agent -g agent /home/agent/.agents/skills
-playwright_package_dir="$(mise where 'npm:@playwright/cli')"
-playwright_skill_dir="$(find "${playwright_package_dir}" -type d -path '*/skills/playwright-cli' -print -quit)"
-test -n "${playwright_skill_dir}"
-cp -a "${playwright_skill_dir}" /home/agent/.agents/skills/
-
 git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /home/agent/.oh-my-zsh
 rm -rf /home/agent/.oh-my-zsh/.git
-chown -R agent:agent /home/agent/.agents /home/agent/.oh-my-zsh /ms-playwright
+chown -R agent:agent /home/agent/.oh-my-zsh /ms-playwright
 
 rm -rf \
   /root/.cache \
@@ -55,11 +49,10 @@ rm -rf \
   /var/lib/apt/lists/*
 
 install -d /artifact-root/usr/local/bin /artifact-root/usr/local/share/vscode-in-sandbox
-install -d /artifact-root/home/agent/.agents/skills /artifact-root/ms-playwright
+install -d /artifact-root/home/agent /artifact-root/ms-playwright
 cp -a /usr/local/bin/mise /artifact-root/usr/local/bin/mise
 cp -a /usr/local/share/mise /artifact-root/usr/local/share/mise
 cp -a /ms-playwright/. /artifact-root/ms-playwright/
-cp -a /home/agent/.agents/skills/playwright-cli /artifact-root/home/agent/.agents/skills/
 cp -a /home/agent/.oh-my-zsh /artifact-root/home/agent/.oh-my-zsh
 chown -R agent:agent /artifact-root/home/agent /artifact-root/ms-playwright
 printf 'mise_version=%s\n' "${MISE_VERSION}" \
@@ -67,6 +60,5 @@ printf 'mise_version=%s\n' "${MISE_VERSION}" \
 
 test -x /artifact-root/usr/local/bin/mise
 test -d /artifact-root/usr/local/share/mise/installs
-test -f /artifact-root/home/agent/.agents/skills/playwright-cli/SKILL.md
 test -f /artifact-root/home/agent/.oh-my-zsh/oh-my-zsh.sh
 test -n "$(find /artifact-root/ms-playwright -maxdepth 1 -type d -name 'chromium-*' -print -quit)"

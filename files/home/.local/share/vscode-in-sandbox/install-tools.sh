@@ -63,7 +63,9 @@ if tar --zstd -tf "${artifact_path}" | awk '
 fi
 
 log "extracting prebuilt toolchain"
-tar --zstd -xpf "${artifact_path}" -C /
+# Older artifacts contain this skill, but sbx 0.43+ mounts the shared skills
+# store read-only at this path. Install the skill on the host with sbx skills.
+tar --zstd --exclude='home/agent/.agents' -xpf "${artifact_path}" -C /
 install -D -m 0644 /home/agent/.local/share/vscode-in-sandbox/mise-config.toml /etc/mise/config.toml
 
 export MISE_SYSTEM_DATA_DIR=/usr/local/share/mise
@@ -80,7 +82,7 @@ log "installing Playwright runtime dependencies"
 # runtime packages without downloading the browser again.
 playwright-cli install-browser --with-deps chromium
 
-chown -R agent:agent /home/agent/.oh-my-zsh /home/agent/.agents/skills/playwright-cli /ms-playwright
+chown -R agent:agent /home/agent/.oh-my-zsh /ms-playwright
 rm -rf /var/lib/apt/lists/*
 
 log "verifying installed versions"
@@ -96,5 +98,4 @@ test "$(codex --version)" = "codex-cli 0.144.6"
 command -v pre-commit >/dev/null
 command -v playwright-cli >/dev/null
 playwright-cli install-browser --list | grep -q chromium
-test -f /home/agent/.agents/skills/playwright-cli/SKILL.md
 test -f /home/agent/.oh-my-zsh/oh-my-zsh.sh

@@ -65,15 +65,15 @@ sbx_client_version="$(
     | sed -n '1p'
 )"
 if [ -z "${sbx_client_version}" ]; then
-  echo "Unable to determine the sbx client version. Docker Sandboxes 0.37.0 or later is required." >&2
+  echo "Unable to determine the sbx client version. Docker Sandboxes 0.43.0 or later is required." >&2
   exit 1
 fi
 
 IFS=. read -r sbx_version_major sbx_version_minor _ <<EOF
 ${sbx_client_version}
 EOF
-if [ "${sbx_version_major}" -eq 0 ] && [ "${sbx_version_minor}" -lt 37 ]; then
-  printf 'Docker Sandboxes 0.37.0 or later is required; found %s.\n' "${sbx_client_version}" >&2
+if [ "${sbx_version_major}" -eq 0 ] && [ "${sbx_version_minor}" -lt 43 ]; then
+  printf 'Docker Sandboxes 0.43.0 or later is required; found %s.\n' "${sbx_client_version}" >&2
   exit 1
 fi
 
@@ -208,7 +208,7 @@ else
     exit 1
   fi
 
-  create_args=(create --name "${SANDBOX_NAME}" --kit "${SCRIPT_DIR}")
+  create_args=(create --name "${SANDBOX_NAME}" --skills=readonly --kit "${SCRIPT_DIR}")
   if [ "${NO_FIREWALL}" = "1" ]; then
     create_args+=(--kit "${NO_FIREWALL_KIT}")
   fi

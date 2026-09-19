@@ -72,7 +72,7 @@ Nord theme拡張はRemote側へinstallしません。`workbench.colorTheme: "Nor
 ## 前提条件
 
 - Docker Desktop
-- Docker Sandboxes / `sbx` CLI 0.37.0以降
+- Docker Sandboxes / `sbx` CLI 0.43.0以降
 - ローカルのVS Code
 - VS CodeのRemote - SSH拡張（`ms-vscode-remote.remote-ssh`）
 - hostのOpenSSH client
@@ -119,7 +119,7 @@ Codex拡張内でも追加のChatGPT loginは行わないでください。拡�
 
 通常はcustom templateへtoolchainを焼き込みますが、sbx 0.37.xのrootfs regression [docker/sbx-releases#366](https://github.com/docker/sbx-releases/issues/366) を避けるため、現在のlauncherはsbx組み込みの `codex-docker` templateを使用します。`build-template.sh` は当面の起動手順では使用しません。
 
-ローカルDockerで、mise toolchain、Playwright Chromium、Playwright CLI skill、oh-my-zshを完成済みartifactとして生成します。Kitのmarker付きstartup hookは、sandbox新規作成時にartifactを検証・展開し、Ubuntu runtime packageとPlaywrightのsystem dependencyだけをaptで導入します。sandbox内ではmise install、browser download、oh-my-zsh cloneを行いません。startup hook自体は起動ごとに呼ばれますが、同じsandboxでは永続markerを確認して即終了します。
+ローカルDockerで、mise toolchain、Playwright Chromium、oh-my-zshを完成済みartifactとして生成します。Playwright CLI skillはhostで `sbx skills add microsoft/playwright-cli --skill playwright-cli` を実行して共有skillsストアに登録します。sbx 0.43.0以降では、このストアがsandbox内の `/home/agent/.agents/skills` に読み取り専用でマウントされます。Kitのmarker付きstartup hookは、sandbox新規作成時にartifactを検証・展開し、Ubuntu runtime packageとPlaywrightのsystem dependencyだけをaptで導入します。sandbox内ではmise install、browser download、oh-my-zsh cloneを行いません。startup hook自体は起動ごとに呼ばれますが、同じsandboxでは永続markerを確認して即終了します。
 
 sbx 0.37.0では `commands.install` がKitの静的ファイル配置より先に実行され、同梱したlocal install scriptを参照できません。このため、静的ファイル配置後に呼ばれるstartup hookを使用し、launcherが完了markerを待ってからVS Codeを開きます。
 
