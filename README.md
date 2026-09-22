@@ -36,9 +36,17 @@ balanced設定には次のカテゴリが含まれます。
 - OS package repositories
 - certificate validation
 
-`spec.yaml` の `caps.network.allow` には、balancedでカバーされないVS Codeとツール導入用domainだけを追加しています。Kitにはdeny ruleはありませんが、組織のgovernance policyやsandbox profileで設定されたdeny ruleがある場合は、そちらが優先されます。
+`kits/network/spec.yaml` の `permissions.network.allow` には、balancedでカバーされないVS Codeとツール導入用domainだけを定義しています。これは単独で適用できるDocker Sandboxes Kit仕様 v2のmixinです。通常のsandbox作成時には `sbx-vscode` がこのmixinを自動的に追加します。Kitにはdeny ruleはありませんが、組織のgovernance policyやsandbox profileで設定されたdeny ruleがある場合は、そちらが優先されます。
 
-`--no-firewall` を指定したsandboxには、専用mixin Kitから `**` のallow ruleを追加し、すべてのoutbound network trafficを許可します。この指定はsandbox固有であり、hostのglobal `balanced` policyや通常版sandboxのpolicyは変更しません。Docker Sandboxesの通信経路自体を迂回するものではなく、組織のgovernance policyやsandbox profileのdeny ruleは引き続き優先されます。
+network allowlistを変更した場合、既存sandboxへ次のコマンドで適用できます。`sbx kit add` はcontainerを再作成してkitを追加しますが、host workspaceとkit-owned volumeは保持されます。
+
+```bash
+sbx kit add <sandbox-name> /path/to/vscode-in-sandbox/kits/network
+```
+
+kit add対応前に作成したsandboxでは、いったんsandboxを削除して `sbx-vscode` で作り直してください。
+
+`--no-firewall` を指定したsandboxには、network mixinに加えて専用のv2 mixin Kitから `**` のallow ruleを追加し、すべてのoutbound network trafficを許可します。この指定はsandbox固有であり、hostのglobal `balanced` policyや通常版sandboxのpolicyは変更しません。Docker Sandboxesの通信経路自体を迂回するものではなく、組織のgovernance policyやsandbox profileのdeny ruleは引き続き優先されます。
 
 ## 導入されるツール
 
@@ -117,7 +125,7 @@ Codex拡張内でも追加のChatGPT loginは行わないでください。拡�
 
 ## Toolchainとcustom template
 
-`Dockerfile` はDocker Sandboxes標準のCodex imageを土台に、mise toolchain、Playwright Chromium、oh-my-zshを `local/vscode-codex:1` custom templateへ直接焼き込みます。Playwright CLI skillはhostで `sbx skills add microsoft/playwright-cli --skill playwright-cli` を実行して共有skillsストアに登録します。sbx 0.43.0以降では、このストアがsandbox内の `/home/agent/.agents/skills` に読み取り専用でマウントされます。
+`Dockerfile` はDocker Sandboxes標準のCodex imageを土台に、mise toolchain、Playwright Chromium、oh-my-zshを `local/vscode-codex:1` custom templateへ直接焼き込みます。Playwright CLI skillはhostで `sbx skills add microsoft/playwright-cli --skill playwright-cli` を実行して共有skillsストアに登録します。sbx 0.43.0以降では、このストアがsandbox内の `/home/agent/.agents/skills` に読み取り専用でマウントされます。KitはDocker Sandboxes Kit仕様 v2（`schemaVersion: "2"`）を使用します。
 
 `build-template.sh` はDocker imageをbuildし、Docker Sandboxesへloadします。sandbox作成・起動時にtoolchainのinstallやdownloadは行いません。
 
@@ -332,6 +340,8 @@ Kitディレクトリで静的検証を実行します。
 cd /path/to/vscode-in-sandbox
 
 sbx kit validate .
+sbx kit validate ./kits/network
+sbx kit validate ./kits/no-firewall
 bash -n ./build-template.sh
 bash -n ./sbx-vscode
 bash -n ./files/home/.local/share/vscode-in-sandbox/install-tools.sh

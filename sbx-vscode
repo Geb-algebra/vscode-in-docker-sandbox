@@ -148,6 +148,7 @@ PROFILE="${SBX_PROFILE:-}"
 AUTO_OPEN="${SBX_AUTO_OPEN:-1}"
 SSH_HOST="${SANDBOX_NAME}.sbx"
 NO_FIREWALL_KIT="${SCRIPT_DIR}/kits/no-firewall"
+NETWORK_KIT="${SCRIPT_DIR}/kits/network"
 TEMPLATE_NAME="${SBX_TEMPLATE_NAME:-local/vscode-codex:1}"
 
 log() {
@@ -167,7 +168,7 @@ fi
 if sbx ls -q | grep -Fqx "${SANDBOX_NAME}"; then
   log "reusing sandbox: ${SANDBOX_NAME}"
 else
-  create_args=(create --name "${SANDBOX_NAME}" --skills=readonly --kit "${SCRIPT_DIR}")
+  create_args=(create --name "${SANDBOX_NAME}" --skills=readonly --kit "${SCRIPT_DIR}" --kit "${NETWORK_KIT}")
   if [ "${NO_FIREWALL}" = "1" ]; then
     create_args+=(--kit "${NO_FIREWALL_KIT}")
   fi
