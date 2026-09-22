@@ -9,20 +9,6 @@ environment:
     PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     PLAYWRIGHT_MCP_BROWSER: chromium
 
-# BEGIN TEMPORARY WORKAROUND: docker/sbx-releases#366
-# Custom template layers are unreliable on sbx 0.37.x. In 0.37.0, install
-# commands run before Kit static files are available, so this startup wrapper
-# uses a persistent marker to perform the real install once per sandbox.
-# Remove this block as described in the workaround memo.
-commands:
-  startup:
-    - command:
-        - bash
-        - /home/agent/.local/share/vscode-in-sandbox/install-toolchain-once.sh
-      user: "0"
-      description: Ensure pinned development tools are installed
-# END TEMPORARY WORKAROUND: docker/sbx-releases#366
-
 caps:
   network:
     allow:

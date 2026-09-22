@@ -79,14 +79,14 @@ Nord theme拡張はRemote側へinstallしません。`workbench.colorTheme: "Nor
 - Docker account
 - Codexを利用できるOpenAI account
 
-初回利用時とtool version変更時には、Dockerでnative architecture用のtoolchain artifactを生成します。
+初回利用時とtool version変更時には、custom templateをbuildしてDocker Sandboxesへloadします。
 
 ```bash
 cd /path/to/vscode-in-sandbox
-./build-toolchain-artifact.sh
+./build-template.sh
 ```
 
-生成物はKit直下の `artifacts/` に保存されます。数百MB規模になるためGit管理外です。sbx 0.37ではKit static fileへ大容量binaryを投入できないため、launcherがartifact directoryを追加direct mountします。このmountはsbxのworkspace mount仕様上read-writeですが、startup hookはSHA-256検証後の読み取りにだけ使用します。artifact directoryにはcredentialsやprivate filesを置かないでください。
+`Dockerfile` がnative architecture用のtoolchain、Playwright Chromium、oh-my-zshを直接導入します。sandboxの作成・起動時にこれらをdownloadする処理はありません。
 
 ## Host側の初期設定
 
@@ -115,25 +115,19 @@ global secretは新しく作成するsandboxにだけ適用されます。認証
 
 Codex拡張内でも追加のChatGPT loginは行わないでください。拡張独自の認証情報がsandbox内へ保存される可能性があります。
 
-## Toolchainのinstallと一時workaround
+## Toolchainとcustom template
 
-通常はcustom templateへtoolchainを焼き込みますが、sbx 0.37.xのrootfs regression [docker/sbx-releases#366](https://github.com/docker/sbx-releases/issues/366) を避けるため、現在のlauncherはsbx組み込みの `codex-docker` templateを使用します。`build-template.sh` は当面の起動手順では使用しません。
+`Dockerfile` はDocker Sandboxes標準のCodex imageを土台に、mise toolchain、Playwright Chromium、oh-my-zshを `local/vscode-codex:1` custom templateへ直接焼き込みます。Playwright CLI skillはhostで `sbx skills add microsoft/playwright-cli --skill playwright-cli` を実行して共有skillsストアに登録します。sbx 0.43.0以降では、このストアがsandbox内の `/home/agent/.agents/skills` に読み取り専用でマウントされます。
 
-ローカルDockerで、mise toolchain、Playwright Chromium、oh-my-zshを完成済みartifactとして生成します。Playwright CLI skillはhostで `sbx skills add microsoft/playwright-cli --skill playwright-cli` を実行して共有skillsストアに登録します。sbx 0.43.0以降では、このストアがsandbox内の `/home/agent/.agents/skills` に読み取り専用でマウントされます。Kitのmarker付きstartup hookは、sandbox新規作成時にartifactを検証・展開し、Ubuntu runtime packageとPlaywrightのsystem dependencyだけをaptで導入します。sandbox内ではmise install、browser download、oh-my-zsh cloneを行いません。startup hook自体は起動ごとに呼ばれますが、同じsandboxでは永続markerを確認して即終了します。
+`build-template.sh` はDocker imageをbuildし、Docker Sandboxesへloadします。sandbox作成・起動時にtoolchainのinstallやdownloadは行いません。
 
-sbx 0.37.0では `commands.install` がKitの静的ファイル配置より先に実行され、同梱したlocal install scriptを参照できません。このため、静的ファイル配置後に呼ばれるstartup hookを使用し、launcherが完了markerを待ってからVS Codeを開きます。
-
-install logはsandbox内の `/home/agent/.local/state/vscode-in-sandbox/toolchain-install.log` に保存されます。起動時のnetwork installは、標準templateの公式sourceから取得するapt packageだけです。artifactのchecksum不一致、architecture不一致、想定外pathは展開前にエラーになります。
-
-`mise-config.toml`、mise自体のversion、またはartifactに含めるツールを変更した場合は、artifactを再生成して既存sandboxを削除してください。
+`mise-config.toml`、mise自体のversion、または導入ツールを変更した場合は、templateを再buildして既存sandboxを削除してください。
 
 ```bash
-./build-toolchain-artifact.sh
+./build-template.sh
 sbx rm <sandbox-name>
 sbx-vscode /path/to/workspace
 ```
-
-背景と、#366修正後にcustom templateへ戻す範囲は [`docs/temporary-sbx-0.37-template-layer-workaround.md`](docs/temporary-sbx-0.37-template-layer-workaround.md) に記録しています。
 
 ## 起動方法
 
@@ -186,20 +180,19 @@ sbx-vscode
 
 起動スクリプトは次の処理を行います。
 
-1. `sbx` 0.37.0以降と、`sbx setup ssh` による公式SSH設定を確認する。
+1. `sbx` 0.43.0以降と、`sbx setup ssh` による公式SSH設定を確認する。
 2. 通常版ではworkspaceのディレクトリ名（先頭10文字）と絶対pathのSHA-256 hash（先頭8文字）から `<dirname>-<hash>` 形式のsandbox名を生成する。firewallなし版では `nf-<dirname先頭7文字>-<hash先頭8文字>` 形式にする。同名ディレクトリでも絶対pathが異なれば別sandboxになる。sandbox名に使用できない文字がある場合は `-` に置き換える。
 3. workspaceがGit linked worktreeの場合、Gitの共通ディレクトリ（元リポジトリの `.git`）を自動検出する。
-4. 未作成の場合、native architecture用artifactとchecksumを検証し、artifact directoryを追加mountして、sbx組み込みの `codex-docker` templateとこのKitを使ってCodex sandboxを作成する。firewallなし版では全outboundを許可する専用Kitも追加する。Kitのmarker付きstartup hookがartifactを展開し、runtime packageを一度だけ導入する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
+4. 未作成の場合、`local/vscode-codex:1` custom templateとこのKitを使ってCodex sandboxを作成する。firewallなし版では全outboundを許可する専用Kitも追加する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
 5. 既存の場合は同名sandboxを再利用する。
 6. Docker Sandboxes公式の `<sandbox-name>.sbx` targetへ接続できることを確認する。
-7. toolchain installの完了markerを確認する。
-8. mount済みworkspaceをVS Code Remote - SSHで開き、共通拡張をinstallしてlauncherを終了する。
+7. mount済みworkspaceをVS Code Remote - SSHで開き、共通拡張をinstallしてlauncherを終了する。
 
 Docker Sandboxesのdirect mountはhost workspaceをsandbox内でも同じ絶対pathへmountします。Codex agentとVS Codeは、どちらもこのmount先を使用します。`~/workspace` は使用しません。
 
 linked worktreeの判定には `git rev-parse --git-dir --git-common-dir` を使用します。worktree固有のGit directoryと共通Git directoryが異なる場合にだけ、共通 `.git` を追加mountします。commit、index、branchなどのGit管理情報を更新できるよう、この追加mountはread-writeです。元リポジトリの作業ツリー自体はmountしません。通常のGitリポジトリやGit管理外のworkspaceでは追加mountされません。
 
-既存sandboxのtemplate、Kit、mount構成は変更されません。自前OpenSSH版やcustom templateから作成したsandbox、またはlinked worktree mount追加前に作成したsandboxでは、ログに表示されるsandbox名を確認してから削除し、再作成してください。
+既存sandboxのtemplate、Kit、mount構成は変更されません。組み込みtemplateや自前OpenSSH版から作成したsandbox、またはlinked worktree mount追加前に作成したsandboxでは、ログに表示されるsandbox名を確認してから削除し、再作成してください。
 
 ```bash
 sbx rm <sandbox-name>
@@ -240,13 +233,13 @@ SBX_AUTO_OPEN=0 \
 SBX_NAME       sandbox名
 SBX_WORKSPACE  workspaceの絶対path。第1引数より優先される
 SBX_PROFILE    Docker Sandboxesのgovernance profile
-SBX_TEMPLATE_NAME  任意のtemplate override。未指定時はsbx組み込みのCodex template
+SBX_TEMPLATE_NAME  任意のtemplate override。未指定時は`local/vscode-codex:1`
 SBX_AUTO_OPEN  `0` の場合はローカルVS Code自動起動だけを無効化する
 ```
 
 `--no-firewall` と `SBX_NAME` を併用した場合、`SBX_NAME` はそのまま最終名になります。通常版のsandbox名を指定すると既存の通常版sandboxが再利用されるため、firewallなし版には専用の名前を指定してください。
 
-`SBX_TEMPLATE_NAME` は検証用途に残しています。#366の影響下ではcustom templateを指定しないでください。
+`SBX_TEMPLATE_NAME` は別tagのcustom templateを検証する場合に使用できます。
 
 ### macOSでVS Codeが再接続を繰り返す場合
 
@@ -306,7 +299,7 @@ Include ~/.ssh/config.d/docker-sandbox-vscode/*.conf
 
 - Codex OAuth: hostのOS Keychainに保存され、sandboxを削除しても残る
 - Docker Sandboxes公式SSH設定: hostの `~/.ssh/config` とDocker Sandboxes管理領域に保存される
-- Kit artifactから展開したツール、Playwright browser、oh-my-zsh: sandbox内に保存され、stop/startをまたいで残る
+- custom templateのツール、Playwright browser、oh-my-zsh: image layerとしてsandboxへ提供される
 - Kitの静的ファイルと共通設定: sandbox作成時に配置される
 - VS Code Serverの実行時state: sandboxが存在する間はstop/startをまたいで残る
 
@@ -329,7 +322,7 @@ files/home/.config/vscode-in-sandbox/extensions.txt
 files/home/.local/share/vscode-in-sandbox/mise-config.toml
 ```
 
-toolchain設定の変更後は `./build-toolchain-artifact.sh` を実行し、既存sandboxを削除してから`sbx-vscode`で新規作成してください。Kitの静的ファイルとartifactはsandbox作成時に適用されます。workspace自体はhost側にあるため削除されませんが、sandbox内のtoolchainとVS Code Server実行時stateは失われます。
+toolchain設定の変更後は `./build-template.sh` を実行し、既存sandboxを削除してから`sbx-vscode`で新規作成してください。custom templateとKitの静的ファイルはsandbox作成時に適用されます。workspace自体はhost側にあるため削除されませんが、sandbox内のVS Code Server実行時stateは失われます。
 
 ## 検証
 
@@ -339,19 +332,15 @@ Kitディレクトリで静的検証を実行します。
 cd /path/to/vscode-in-sandbox
 
 sbx kit validate .
-bash -n ./build-toolchain-artifact.sh
 bash -n ./build-template.sh
 bash -n ./sbx-vscode
-bash -n ./scripts/build-toolchain-root.sh
 bash -n ./files/home/.local/share/vscode-in-sandbox/install-tools.sh
 ```
 
-artifactを含む完全な検証では、生成後にarchiveの必須pathとchecksumも確認します。
+完全な検証ではtemplateをbuildしてDocker Sandboxesへloadします。
 
 ```bash
-./build-toolchain-artifact.sh
-cd artifacts
-shasum -a 256 -c toolchain-linux-arm64.tar.zst.sha256
+./build-template.sh
 ```
 
 sandbox作成後は、実際に導入されたversionと拡張を確認します。

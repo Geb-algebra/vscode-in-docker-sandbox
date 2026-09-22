@@ -148,28 +148,7 @@ PROFILE="${SBX_PROFILE:-}"
 AUTO_OPEN="${SBX_AUTO_OPEN:-1}"
 SSH_HOST="${SANDBOX_NAME}.sbx"
 NO_FIREWALL_KIT="${SCRIPT_DIR}/kits/no-firewall"
-
-case "$(uname -m)" in
-  arm64|aarch64) artifact_arch="arm64" ;;
-  x86_64|amd64) artifact_arch="amd64" ;;
-  *)
-    printf 'Unsupported host architecture: %s\n' "$(uname -m)" >&2
-    exit 1
-    ;;
-esac
-artifact_dir="${SCRIPT_DIR}/artifacts"
-artifact_name="toolchain-linux-${artifact_arch}.tar.zst"
-artifact_path="${artifact_dir}/${artifact_name}"
-checksum_path="${artifact_path}.sha256"
-artifact_path_file="${SCRIPT_DIR}/files/home/.local/share/vscode-in-sandbox/artifact-path"
-
-# BEGIN TEMPORARY WORKAROUND: docker/sbx-releases#366
-# An empty default lets sbx select its built-in codex-docker template. Custom
-# template layers are currently unreliable on sbx 0.37.x, so a marker-guarded
-# Kit startup hook installs tools once per sandbox instead. See:
-# docs/temporary-sbx-0.37-template-layer-workaround.md
-TEMPLATE_NAME="${SBX_TEMPLATE_NAME:-}"
-# END TEMPORARY WORKAROUND: docker/sbx-releases#366
+TEMPLATE_NAME="${SBX_TEMPLATE_NAME:-local/vscode-codex:1}"
 
 log() {
   printf '[sbx-vscode] %s\n' "$*" >&2
@@ -188,50 +167,22 @@ fi
 if sbx ls -q | grep -Fqx "${SANDBOX_NAME}"; then
   log "reusing sandbox: ${SANDBOX_NAME}"
 else
-  if [ ! -r "${artifact_path}" ] || [ ! -r "${checksum_path}" ] \
-    || [ "$(sed -n '1p' "${artifact_path_file}" 2>/dev/null || true)" != "${artifact_dir}" ]; then
-    log "prebuilt toolchain artifact is missing for ${artifact_arch}"
-    log "generate it before creating a sandbox:"
-    printf '[sbx-vscode]   %q\n' "${SCRIPT_DIR}/build-toolchain-artifact.sh" >&2
-    exit 1
-  fi
-  expected_hash="$(awk 'NR == 1 { print $1 }' "${checksum_path}")"
-  if command -v sha256sum >/dev/null 2>&1; then
-    actual_hash="$(sha256sum "${artifact_path}" | awk '{print $1}')"
-  else
-    actual_hash="$(shasum -a 256 "${artifact_path}" | awk '{print $1}')"
-  fi
-  if ! printf '%s' "${expected_hash}" | grep -Eq '^[0-9a-f]{64}$' \
-    || [ "${actual_hash}" != "${expected_hash}" ]; then
-    log "prebuilt toolchain artifact checksum mismatch: ${artifact_name}"
-    log "regenerate it with ${SCRIPT_DIR}/build-toolchain-artifact.sh"
-    exit 1
-  fi
-
   create_args=(create --name "${SANDBOX_NAME}" --skills=readonly --kit "${SCRIPT_DIR}")
   if [ "${NO_FIREWALL}" = "1" ]; then
     create_args+=(--kit "${NO_FIREWALL_KIT}")
   fi
-  if [ -n "${TEMPLATE_NAME}" ]; then
-    create_args+=(--template "${TEMPLATE_NAME}")
-  fi
+  create_args+=(--template "${TEMPLATE_NAME}")
   if [ -n "${PROFILE}" ]; then
     create_args+=(--profile "${PROFILE}")
   fi
   create_args+=(codex "${WORKSPACE}")
-  create_args+=("${artifact_dir}")
   if [ -n "${GIT_COMMON_DIR}" ]; then
     create_args+=("${GIT_COMMON_DIR}")
   fi
 
   log "creating Codex sandbox: ${SANDBOX_NAME}"
-  if [ -n "${TEMPLATE_NAME}" ]; then
-    log "template override: ${TEMPLATE_NAME}"
-  else
-    log "template: built-in codex-docker"
-  fi
+  log "template: ${TEMPLATE_NAME}"
   log "workspace: ${WORKSPACE}"
-  log "the Kit extracts the prebuilt toolchain during sandbox creation"
   log "Codex authentication must be configured on the host with:"
   log "  sbx secret set -g openai --oauth"
   sbx "${create_args[@]}"
@@ -247,71 +198,10 @@ for _ in $(seq 1 30); do
 done
 if [ "${ssh_ready}" != "1" ]; then
   log "Docker Sandboxes SSH access did not become ready: ${SSH_HOST}"
-  log "ensure Docker Sandboxes 0.37.0 or later is installed and run:"
+  log "ensure Docker Sandboxes 0.43.0 or later is installed and run:"
   log "  sbx setup ssh"
   exit 1
 fi
-
-# BEGIN TEMPORARY WORKAROUND: docker/sbx-releases#366
-# The startup hook can run concurrently with container startup. Wait for its
-# persistent result before opening VS Code. Remove this block with the matching
-# spec.yaml workaround after following the workaround memo.
-toolchain_ready="/home/agent/.local/state/vscode-in-sandbox/toolchain.ready"
-toolchain_failed="/home/agent/.local/state/vscode-in-sandbox/toolchain.failed"
-toolchain_script="/home/agent/.local/share/vscode-in-sandbox/install-toolchain-once.sh"
-toolchain_state=""
-
-for toolchain_wait_seconds in $(seq 0 900); do
-  toolchain_state="$(
-    ssh -o BatchMode=yes "${SSH_HOST}" "
-      if [ -f '${toolchain_ready}' ]; then
-        printf ready
-      elif [ -f '${toolchain_failed}' ]; then
-        printf failed
-      elif [ ! -f '${toolchain_script}' ]; then
-        printf unavailable
-      else
-        printf installing
-      fi
-    " 2>/dev/null || true
-  )"
-
-  case "${toolchain_state}" in
-    ready)
-      break
-      ;;
-    failed)
-      log "sandbox toolchain installation failed"
-      ssh -o BatchMode=yes "${SSH_HOST}" \
-        "cat '${toolchain_failed}'; tail -100 /home/agent/.local/state/vscode-in-sandbox/toolchain-install.log" >&2 || true
-      exit 1
-      ;;
-    unavailable)
-      log "this existing sandbox was not created with the current Kit"
-      log "remove and recreate it:"
-      printf '[sbx-vscode]   sbx rm %q\n' "${SANDBOX_NAME}" >&2
-      exit 1
-      ;;
-    installing)
-      if [ $((toolchain_wait_seconds % 10)) -eq 0 ]; then
-        log "waiting for sandbox toolchain installation (${toolchain_wait_seconds}s)"
-      fi
-      sleep 1
-      ;;
-    *)
-      printf 'Unexpected toolchain installation state: %s\n' "${toolchain_state}" >&2
-      exit 1
-      ;;
-  esac
-done
-
-if [ "${toolchain_state}" != "ready" ]; then
-  log "timed out waiting for sandbox toolchain installation"
-  ssh -o BatchMode=yes "${SSH_HOST}" \
-    "tail -100 /home/agent/.local/state/vscode-in-sandbox/toolchain-install.log" >&2 || true
-  exit 1
-fi
-# END TEMPORARY WORKAROUND: docker/sbx-releases#366
 
 REMOTE_AUTHORITY="ssh-remote+${SSH_HOST}"
 
