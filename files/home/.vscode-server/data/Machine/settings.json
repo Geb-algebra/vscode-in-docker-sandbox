@@ -23,5 +23,6 @@
         "path": "/bin/bash"
     },
     "scm.defaultViewMode": "tree",
+    "extensions.verifySignature": false,
     "chatgpt.composerEnterBehavior": "cmdAlways"
 }

@@ -1,6 +1,6 @@
 # VS Code in a Codex Docker Sandbox
 
-Docker Sandboxes標準のCodex templateを土台に、公式SSH accessを使うVS Code Remote - SSHと共通開発環境を組み込むmixin Kitです。
+Docker Sandboxes標準のCodex imageを土台に、公式SSH accessを使うVS Code Remote - SSHと共通開発環境を組み込むKit仕様 v3のworkloadです。
 
 このディレクトリは対象プロジェクトの中に置く必要はありません。`vscode-in-sandbox` と開発対象のworkspaceを別ディレクトリとして管理し、起動時にworkspaceのpathを指定します。
 
@@ -36,7 +36,7 @@ balanced設定には次のカテゴリが含まれます。
 - OS package repositories
 - certificate validation
 
-`kits/network/spec.yaml` の `permissions.network.allow` には、balancedでカバーされないVS Codeとツール導入用domainだけを定義しています。これは単独で適用できるDocker Sandboxes Kit仕様 v2のmixinです。通常のsandbox作成時には `sbx-vscode` がこのmixinを自動的に追加します。Kitにはdeny ruleはありませんが、組織のgovernance policyやsandbox profileで設定されたdeny ruleがある場合は、そちらが優先されます。
+`kits/network/network.yaml` のnetwork policy capabilityには、balancedでカバーされないVS Codeとツール導入用domainだけを定義しています。これは単独で適用できるDocker Sandboxes Kit仕様 v3のmixinです。通常のsandbox作成時には `sbx-vscode` がこのmixinを自動的に追加します。Kitにはdeny ruleはありませんが、組織のgovernance policyやsandbox profileで設定されたdeny ruleがある場合は、そちらが優先されます。
 
 network allowlistを変更した場合、既存sandboxへ次のコマンドで適用できます。`sbx kit add` はcontainerを再作成してkitを追加しますが、host workspaceとkit-owned volumeは保持されます。
 
@@ -46,7 +46,7 @@ sbx kit add <sandbox-name> /path/to/vscode-in-sandbox/kits/network
 
 kit add対応前に作成したsandboxでは、いったんsandboxを削除して `sbx-vscode` で作り直してください。
 
-`--no-firewall` を指定したsandboxには、network mixinに加えて専用のv2 mixin Kitから `**` のallow ruleを追加し、すべてのoutbound network trafficを許可します。この指定はsandbox固有であり、hostのglobal `balanced` policyや通常版sandboxのpolicyは変更しません。Docker Sandboxesの通信経路自体を迂回するものではなく、組織のgovernance policyやsandbox profileのdeny ruleは引き続き優先されます。
+`--no-firewall` を指定したsandboxには、network mixinに加えて専用のv3 mixin Kitから `**` のallow ruleを追加し、すべてのoutbound network trafficを許可します。この指定はsandbox固有であり、hostのglobal `balanced` policyや通常版sandboxのpolicyは変更しません。Docker Sandboxesの通信経路自体を迂回するものではなく、組織のgovernance policyやsandbox profileのdeny ruleは引き続き優先されます。
 
 ## 導入されるツール
 
@@ -57,18 +57,22 @@ Bun 1.3.14（mise）
 Python 3.14.6（mise binary）
 uv 0.11.28（mise）
 Terraform 1.15.8（mise）
-Codex CLI 0.144.6（mise/npm）
+Codex CLI（Docker Sandboxes標準のCodex imageから提供）
 Playwright CLI 0.1.17（mise/npm）
 pre-commit（Ubuntu package）
 OpenSSH client
 zsh / oh-my-zsh（theme: pmcgee）
 ```
 
-共通のVS Code拡張:
+共通のVS Code拡張は、local VS Codeの `remote.SSH.defaultExtensions` で管理します。例:
 
-```text
-eamodio.gitlens
-openai.chatgpt
+```json
+{
+  "remote.SSH.defaultExtensions": [
+    "eamodio.gitlens",
+    "openai.chatgpt"
+  ]
+}
 ```
 
 Nord theme拡張はRemote側へinstallしません。`workbench.colorTheme: "Nord"` を使う場合はローカルVS Code側へinstallします。
@@ -87,14 +91,7 @@ Nord theme拡張はRemote側へinstallしません。`workbench.colorTheme: "Nor
 - Docker account
 - Codexを利用できるOpenAI account
 
-初回利用時とtool version変更時には、custom templateをbuildしてDocker Sandboxesへloadします。
-
-```bash
-cd /path/to/vscode-in-sandbox
-./build-template.sh
-```
-
-`Dockerfile` がnative architecture用のtoolchain、Playwright Chromium、oh-my-zshを直接導入します。sandboxの作成・起動時にこれらをdownloadする処理はありません。
+初回作成時は、Docker Sandboxesのv3 kit builderが `Dockerfile` からworkload imageをbuildします。native architecture用のtoolchain、Playwright Chromium、oh-my-zshはimageに導入され、以降はbuilder cacheが使用されます。
 
 ## Host側の初期設定
 
@@ -123,16 +120,15 @@ global secretは新しく作成するsandboxにだけ適用されます。認証
 
 Codex拡張内でも追加のChatGPT loginは行わないでください。拡張独自の認証情報がsandbox内へ保存される可能性があります。
 
-## Toolchainとcustom template
+## Toolchainとv3 workload
 
-`Dockerfile` はDocker Sandboxes標準のCodex imageを土台に、mise toolchain、Playwright Chromium、oh-my-zshを `local/vscode-codex:1` custom templateへ直接焼き込みます。Playwright CLI skillはhostで `sbx skills add microsoft/playwright-cli --skill playwright-cli` を実行して共有skillsストアに登録します。sbx 0.43.0以降では、このストアがsandbox内の `/home/agent/.agents/skills` に読み取り専用でマウントされます。KitはDocker Sandboxes Kit仕様 v2（`schemaVersion: "2"`）を使用します。
+`vscode.yaml` はDocker Sandboxes Kit仕様 v3（`schemaVersion: "3"`）のworkloadです。`Dockerfile` はDocker Sandboxes標準のCodex imageを土台に、mise toolchain、Playwright Chromium、oh-my-zshを焼き込みます。Playwright CLI skillはhostで `sbx skills add microsoft/playwright-cli --skill playwright-cli` を実行して共有skillsストアに登録します。sbx 0.43.0以降では、このストアがsandbox内の `/home/agent/.agents/skills` に読み取り専用でマウントされます。
 
-`build-template.sh` はDocker imageをbuildし、Docker Sandboxesへloadします。sandbox作成・起動時にtoolchainのinstallやdownloadは行いません。
+Kitはsandbox内の内部パスに2 GiBのpersistent volumeを割り当て、`/home/agent/.codex` から接続します。これはhostの `~/.codex` を共有するmountではなく、sandboxごとにDocker Sandboxesが管理する専用volumeです。sbx 0.50.0以降で作成したsandboxでは、同じsandbox名、Kit source、volume pathを使って削除・再作成するとCodexのチャット履歴とlocal stateが引き継がれます。既存sandboxへvolumeを後付けすることはできないため、初回のみ対象sandboxを削除して作り直してください。
 
-`mise-config.toml`、mise自体のversion、または導入ツールを変更した場合は、templateを再buildして既存sandboxを削除してください。
+`mise-config.toml`、mise自体のversion、または導入ツールを変更した場合は、既存sandboxを削除してください。次回の `sbx-vscode` 実行時にv3 kit builderが変更を検出し、imageを再buildします。
 
 ```bash
-./build-template.sh
 sbx rm <sandbox-name>
 sbx-vscode /path/to/workspace
 ```
@@ -191,16 +187,16 @@ sbx-vscode
 1. `sbx` 0.43.0以降と、`sbx setup ssh` による公式SSH設定を確認する。
 2. 通常版ではworkspaceのディレクトリ名（先頭10文字）と絶対pathのSHA-256 hash（先頭8文字）から `<dirname>-<hash>` 形式のsandbox名を生成する。firewallなし版では `nf-<dirname先頭7文字>-<hash先頭8文字>` 形式にする。同名ディレクトリでも絶対pathが異なれば別sandboxになる。sandbox名に使用できない文字がある場合は `-` に置き換える。
 3. workspaceがGit linked worktreeの場合、Gitの共通ディレクトリ（元リポジトリの `.git`）を自動検出する。
-4. 未作成の場合、`local/vscode-codex:1` custom templateとこのKitを使ってCodex sandboxを作成する。firewallなし版では全outboundを許可する専用Kitも追加する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
+4. 未作成の場合、このv3 workloadとnetwork mixinを使ってCodex sandboxを作成する。firewallなし版では全outboundを許可する専用mixinも追加する。linked worktreeでは共通 `.git` もhostと同じ絶対pathへread-writeで追加mountする。
 5. 既存の場合は同名sandboxを再利用する。
 6. Docker Sandboxes公式の `<sandbox-name>.sbx` targetへ接続できることを確認する。
-7. mount済みworkspaceをVS Code Remote - SSHで開き、共通拡張をinstallしてlauncherを終了する。
+7. mount済みworkspaceをVS Code Remote - SSHで開いてlauncherを終了する。共通拡張はVS Code自身が `remote.SSH.defaultExtensions` に従ってinstallする。
 
 Docker Sandboxesのdirect mountはhost workspaceをsandbox内でも同じ絶対pathへmountします。Codex agentとVS Codeは、どちらもこのmount先を使用します。`~/workspace` は使用しません。
 
 linked worktreeの判定には `git rev-parse --git-dir --git-common-dir` を使用します。worktree固有のGit directoryと共通Git directoryが異なる場合にだけ、共通 `.git` を追加mountします。commit、index、branchなどのGit管理情報を更新できるよう、この追加mountはread-writeです。元リポジトリの作業ツリー自体はmountしません。通常のGitリポジトリやGit管理外のworkspaceでは追加mountされません。
 
-既存sandboxのtemplate、Kit、mount構成は変更されません。組み込みtemplateや自前OpenSSH版から作成したsandbox、またはlinked worktree mount追加前に作成したsandboxでは、ログに表示されるsandbox名を確認してから削除し、再作成してください。
+既存sandboxのworkload、Kit、mount構成は変更されません。v2 Kit、組み込みtemplate、自前OpenSSH版から作成したsandbox、またはlinked worktree mount追加前に作成したsandboxでは、ログに表示されるsandbox名を確認してから削除し、再作成してください。
 
 ```bash
 sbx rm <sandbox-name>
@@ -211,7 +207,7 @@ sbx-vscode /path/to/linked-worktree
 
 ```bash
 ssh <sandbox-name>.sbx
-code --new-window --remote ssh-remote+<sandbox-name>.sbx /absolute/path/to/workspace
+code --new-window --folder-uri vscode-remote://ssh-remote+<sandbox-name>.sbx/absolute/path/to/workspace
 ```
 
 GUIを自動起動せずコマンド表示だけにする場合は、`SBX_AUTO_OPEN=0` を指定します。どちらの場合も接続準備ができた時点で `sbx-vscode` は終了し、sandboxは明示的に停止するまで利用可能なままです。
@@ -241,13 +237,10 @@ SBX_AUTO_OPEN=0 \
 SBX_NAME       sandbox名
 SBX_WORKSPACE  workspaceの絶対path。第1引数より優先される
 SBX_PROFILE    Docker Sandboxesのgovernance profile
-SBX_TEMPLATE_NAME  任意のtemplate override。未指定時は`local/vscode-codex:1`
 SBX_AUTO_OPEN  `0` の場合はローカルVS Code自動起動だけを無効化する
 ```
 
 `--no-firewall` と `SBX_NAME` を併用した場合、`SBX_NAME` はそのまま最終名になります。通常版のsandbox名を指定すると既存の通常版sandboxが再利用されるため、firewallなし版には専用の名前を指定してください。
-
-`SBX_TEMPLATE_NAME` は別tagのcustom templateを検証する場合に使用できます。
 
 ### macOSでVS Codeが再接続を繰り返す場合
 
@@ -307,7 +300,8 @@ Include ~/.ssh/config.d/docker-sandbox-vscode/*.conf
 
 - Codex OAuth: hostのOS Keychainに保存され、sandboxを削除しても残る
 - Docker Sandboxes公式SSH設定: hostの `~/.ssh/config` とDocker Sandboxes管理領域に保存される
-- custom templateのツール、Playwright browser、oh-my-zsh: image layerとしてsandboxへ提供される
+- v3 workloadのツール、Playwright browser、oh-my-zsh: image layerとしてsandboxへ提供される
+- Codexのチャット履歴とlocal state: Kit管理のpersistent volumeに保存される
 - Kitの静的ファイルと共通設定: sandbox作成時に配置される
 - VS Code Serverの実行時state: sandboxが存在する間はstop/startをまたいで残る
 
@@ -326,11 +320,10 @@ sbx secret rm -g openai
 
 ```text
 files/home/.vscode-server/data/Machine/settings.json
-files/home/.config/vscode-in-sandbox/extensions.txt
 files/home/.local/share/vscode-in-sandbox/mise-config.toml
 ```
 
-toolchain設定の変更後は `./build-template.sh` を実行し、既存sandboxを削除してから`sbx-vscode`で新規作成してください。custom templateとKitの静的ファイルはsandbox作成時に適用されます。workspace自体はhost側にあるため削除されませんが、sandbox内のVS Code Server実行時stateは失われます。
+toolchain設定の変更後は、既存sandboxを削除してから `sbx-vscode` で新規作成してください。v3 kit builderがworkload imageの変更を検出して再buildします。workspace自体はhost側にあるため削除されませんが、sandbox内のVS Code Server実行時stateは失われます。Codex stateはKit管理volumeから引き継がれます。
 
 ## 検証
 
@@ -342,15 +335,14 @@ cd /path/to/vscode-in-sandbox
 sbx kit validate .
 sbx kit validate ./kits/network
 sbx kit validate ./kits/no-firewall
-bash -n ./build-template.sh
 bash -n ./sbx-vscode
 bash -n ./files/home/.local/share/vscode-in-sandbox/install-tools.sh
 ```
 
-完全な検証ではtemplateをbuildしてDocker Sandboxesへloadします。
+完全な検証ではv3 workloadからsandboxを作成します。
 
 ```bash
-./build-template.sh
+SBX_AUTO_OPEN=0 sbx-vscode /path/to/workspace
 ```
 
 sandbox作成後は、実際に導入されたversionと拡張を確認します。

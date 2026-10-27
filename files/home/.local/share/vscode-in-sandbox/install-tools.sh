@@ -38,12 +38,10 @@ rm -rf "${mise_download_dir}"
 log "installing tools from mise config"
 mise install --system
 
-for tool_bin in node npm npx corepack bun python python3 pip3 uv uvx terraform codex playwright-cli; do
+for tool_bin in node npm npx corepack bun python python3 pip3 uv uvx terraform playwright-cli; do
   tool_path="$(mise which "${tool_bin}")"
   ln -sfn "${tool_path}" "/usr/local/bin/${tool_bin}"
 done
-codex_path="$(mise which codex)"
-ln -sfn "${codex_path}" /usr/local/share/npm-global/bin/codex
 
 log "installing Playwright Chromium and runtime dependencies"
 mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"
@@ -69,7 +67,8 @@ test "$(bun --version)" = "1.3.14"
 test "$(python3 --version)" = "Python 3.14.6"
 test "$(uv --version | awk '{print $2}')" = "0.11.28"
 test "$(terraform version -json | awk -F '\"' '/terraform_version/ { print $4 }')" = "1.15.8"
-test "$(codex --version)" = "codex-cli 0.144.6"
+command -v codex >/dev/null
+codex --version >/dev/null
 command -v pre-commit >/dev/null
 command -v playwright-cli >/dev/null
 playwright-cli install-browser --list | grep -q chromium

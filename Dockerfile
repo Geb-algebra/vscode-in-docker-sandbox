@@ -11,7 +11,11 @@ COPY files/home/.local/share/vscode-in-sandbox/install-tools.sh /tmp/vscode-in-s
 RUN bash /tmp/vscode-in-sandbox/install-tools.sh \
   && rm -rf /tmp/vscode-in-sandbox
 
-COPY --chown=agent:agent files/home/.config/vscode-in-sandbox/extensions.txt /home/agent/.config/vscode-in-sandbox/extensions.txt
 COPY --chown=agent:agent files/home/.vscode-server/data/Machine/settings.json /home/agent/.vscode-server/data/Machine/settings.json
 COPY --chown=agent:agent files/home/.zshrc /home/agent/.zshrc
 USER agent
+
+ENV IS_SANDBOX=1
+ENV BROWSER=xdg-open
+ENV CODEX_HOME=/home/agent/.codex
+ENV GIT_TERMINAL_PROMPT=0

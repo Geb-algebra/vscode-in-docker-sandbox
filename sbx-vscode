@@ -58,14 +58,23 @@ if ! command -v sbx >/dev/null 2>&1; then
   exit 1
 fi
 
-sbx_version_output="$(sbx version 2>&1 || true)"
+sbx_version_json="$(sbx version --json 2>/dev/null || true)"
 sbx_client_version="$(
-  printf '%s\n' "${sbx_version_output}" \
-    | sed -nE 's/^(Client Version:|sbx version:)[[:space:]]*v?([0-9]+\.[0-9]+\.[0-9]+).*/\2/p' \
+  printf '%s\n' "${sbx_version_json}" \
+    | sed -nE 's/^[[:space:]]*"version":[[:space:]]*"v?([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' \
     | sed -n '1p'
 )"
 if [ -z "${sbx_client_version}" ]; then
+  sbx_version_output="$(sbx version 2>&1 || true)"
+  sbx_client_version="$(
+    printf '%s\n' "${sbx_version_output}" \
+      | sed -nE 's/^[[:space:]]*(Client Version:|sbx version:)[[:space:]]*v?([0-9]+\.[0-9]+\.[0-9]+).*/\2/p' \
+      | sed -n '1p'
+  )"
+fi
+if [ -z "${sbx_client_version}" ]; then
   echo "Unable to determine the sbx client version. Docker Sandboxes 0.43.0 or later is required." >&2
+  printf 'Output from sbx version:\n%s\n' "${sbx_version_output:-${sbx_version_json}}" >&2
   exit 1
 fi
 
@@ -149,11 +158,71 @@ AUTO_OPEN="${SBX_AUTO_OPEN:-1}"
 SSH_HOST="${SANDBOX_NAME}.sbx"
 NO_FIREWALL_KIT="${SCRIPT_DIR}/kits/no-firewall"
 NETWORK_KIT="${SCRIPT_DIR}/kits/network"
-TEMPLATE_NAME="${SBX_TEMPLATE_NAME:-local/vscode-codex:1}"
+export SBX_KIT_BUILDER="${SBX_KIT_BUILDER:-sandbox}"
 
 log() {
   printf '[sbx-vscode] %s\n' "$*" >&2
 }
+
+# BEGIN TEMPORARY WORKAROUND: docker/sbx-releases#744
+# sbx can deadlock while starting a layered image when the shim blocks writing
+# its large "creating container task" record to the shim log FIFO. A second
+# reader drains that record and lets the VM continue booting. Remove this whole
+# block, plus the matching activation/cleanup block below, once the upstream
+# issue is fixed in the installed sbx release.
+shim_log_reader_pid=""
+shim_log_marker=""
+shim_log_reader_pids_file=""
+shim_logs_seen_file=""
+
+start_shim_log_fifo_workaround() {
+  local shim_task_root="${HOME}/.sbx/run/d/containerd/state/io.containerd.runtime.v2.task/docker"
+
+  shim_log_marker="$(mktemp "${TMPDIR:-/tmp}/sbx-vscode-shim-log.XXXXXX")"
+  shim_log_reader_pids_file="$(mktemp "${TMPDIR:-/tmp}/sbx-vscode-shim-log-pids.XXXXXX")"
+  shim_logs_seen_file="$(mktemp "${TMPDIR:-/tmp}/sbx-vscode-shim-logs-seen.XXXXXX")"
+  (
+    while :; do
+      for shim_log in "${shim_task_root}"/*/log; do
+        [ -p "${shim_log}" ] || continue
+        [ "${shim_log}" -nt "${shim_log_marker}" ] || continue
+        grep -Fqx "${shim_log}" "${shim_logs_seen_file}" && continue
+        printf '%s\n' "${shim_log}" >>"${shim_logs_seen_file}"
+        cat "${shim_log}" >/dev/null &
+        printf '%s\n' "$!" >>"${shim_log_reader_pids_file}"
+      done
+      sleep 0.05
+    done
+  ) &
+  shim_log_reader_pid="$!"
+}
+
+stop_shim_log_fifo_workaround() {
+  local reader_pid
+
+  if [ -n "${shim_log_reader_pid}" ]; then
+    kill "${shim_log_reader_pid}" 2>/dev/null || true
+    wait "${shim_log_reader_pid}" 2>/dev/null || true
+    shim_log_reader_pid=""
+  fi
+  if [ -n "${shim_log_reader_pids_file}" ] && [ -f "${shim_log_reader_pids_file}" ]; then
+    while IFS= read -r reader_pid; do
+      kill "${reader_pid}" 2>/dev/null || true
+      wait "${reader_pid}" 2>/dev/null || true
+    done <"${shim_log_reader_pids_file}"
+    rm -f "${shim_log_reader_pids_file}"
+    shim_log_reader_pids_file=""
+  fi
+  if [ -n "${shim_logs_seen_file}" ]; then
+    rm -f "${shim_logs_seen_file}"
+    shim_logs_seen_file=""
+  fi
+  if [ -n "${shim_log_marker}" ]; then
+    rm -f "${shim_log_marker}"
+    shim_log_marker=""
+  fi
+}
+# END TEMPORARY WORKAROUND: docker/sbx-releases#744
 
 if [ "${NO_FIREWALL}" = "1" ]; then
   log "WARNING: all outbound network traffic is allowed for ${SANDBOX_NAME}"
@@ -165,24 +234,31 @@ if [ -n "${GIT_COMMON_DIR}" ]; then
   log "shared Git directory (read-write mount): ${GIT_COMMON_DIR}"
 fi
 
+# BEGIN TEMPORARY WORKAROUND ACTIVATION: docker/sbx-releases#744
+# Keep the FIFO reader active through both creation and the SSH-triggered start
+# of an existing stopped sandbox.
+start_shim_log_fifo_workaround
+trap 'stop_shim_log_fifo_workaround' EXIT
+trap 'stop_shim_log_fifo_workaround; exit 130' INT TERM
+# END TEMPORARY WORKAROUND ACTIVATION: docker/sbx-releases#744
+
 if sbx ls -q | grep -Fqx "${SANDBOX_NAME}"; then
   log "reusing sandbox: ${SANDBOX_NAME}"
 else
-  create_args=(create --name "${SANDBOX_NAME}" --skills=readonly --kit "${SCRIPT_DIR}" --kit "${NETWORK_KIT}")
+  create_args=(create --name "${SANDBOX_NAME}" --skills=readonly --kit "${NETWORK_KIT}")
   if [ "${NO_FIREWALL}" = "1" ]; then
     create_args+=(--kit "${NO_FIREWALL_KIT}")
   fi
-  create_args+=(--template "${TEMPLATE_NAME}")
   if [ -n "${PROFILE}" ]; then
     create_args+=(--profile "${PROFILE}")
   fi
-  create_args+=(codex "${WORKSPACE}")
+  create_args+=("${SCRIPT_DIR}" "${WORKSPACE}")
   if [ -n "${GIT_COMMON_DIR}" ]; then
     create_args+=("${GIT_COMMON_DIR}")
   fi
 
   log "creating Codex sandbox: ${SANDBOX_NAME}"
-  log "template: ${TEMPLATE_NAME}"
+  log "workload Kit: ${SCRIPT_DIR}"
   log "workspace: ${WORKSPACE}"
   log "Codex authentication must be configured on the host with:"
   log "  sbx secret set -g openai --oauth"
@@ -205,33 +281,25 @@ if [ "${ssh_ready}" != "1" ]; then
 fi
 
 REMOTE_AUTHORITY="ssh-remote+${SSH_HOST}"
+REMOTE_FOLDER_URI="vscode-remote://${REMOTE_AUTHORITY}${WORKSPACE}"
 
 log "sandbox SSH target: ${SSH_HOST}"
 log "connect from the host with:"
 printf '[sbx-vscode]   ssh %q\n' "${SSH_HOST}" >&2
 log "open the mounted workspace in VS Code with:"
-printf '[sbx-vscode]   code --new-window --remote %q %q\n' "${REMOTE_AUTHORITY}" "${WORKSPACE}" >&2
+printf '[sbx-vscode]   code --new-window --folder-uri %q\n' "${REMOTE_FOLDER_URI}" >&2
 
 if [ "${AUTO_OPEN}" != "0" ]; then
   log "opening the workspace in local VS Code over SSH"
-  code --new-window --remote "${REMOTE_AUTHORITY}" "${WORKSPACE}"
-
-  # Install the kit's common extensions into the Remote-SSH server after it
-  # has been bootstrapped. The image intentionally does not contain the VS
-  # Code desktop/server package, so this is best-effort and must not prevent
-  # the workspace from opening if a particular extension is unavailable.
-  extensions_file="${SCRIPT_DIR}/files/home/.config/vscode-in-sandbox/extensions.txt"
-  if [ -f "${extensions_file}" ]; then
-    while IFS= read -r extension_id; do
-      case "${extension_id}" in
-        ''|'#'*) continue ;;
-      esac
-      log "installing Remote-SSH extension ${extension_id}"
-      code --remote "${REMOTE_AUTHORITY}" --install-extension "${extension_id}" --force \
-        >/dev/null 2>&1 || log "warning: failed to install Remote-SSH extension ${extension_id}"
-    done < "${extensions_file}"
-  fi
+  code --new-window --folder-uri "${REMOTE_FOLDER_URI}"
 fi
+
+# BEGIN TEMPORARY WORKAROUND CLEANUP: docker/sbx-releases#744
+# Do this after launching VS Code: a stuck FIFO reader must not prevent the
+# mounted workspace from opening automatically.
+stop_shim_log_fifo_workaround
+trap - EXIT INT TERM
+# END TEMPORARY WORKAROUND CLEANUP: docker/sbx-releases#744
 
 log "launcher finished; the sandbox remains available"
 log "stop it when finished with:"

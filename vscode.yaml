@@ -1,0 +1,109 @@
+# syntax=docker/sandbox-kit:3
+schemaVersion: "3"
+kind: workload
+displayName: VS Code development environment
+description: Adds pinned development tools and shared VS Code preferences to a Codex sandbox.
+version: "1.0.0"
+dockerfile: ./Dockerfile
+
+capabilities:
+  - type: com.docker.sandbox/sbx@1
+
+  # Required by credential@1 validation for the two proxy injection targets.
+  # These do not broaden the effective policy: the host local policy already
+  # allows **.openai.com.
+  - type: com.docker.sandbox/network-policy@1
+    config:
+      runtime:
+        allow:
+          - api.openai.com:443
+          - openai.com:443
+
+  - type: com.docker.sandbox/credential@1
+    optional: true
+    description: OpenAI API access (API key or ChatGPT OAuth)
+    config:
+      service: openai
+      phase: runtime
+      apiKey:
+        name: OPENAI_API_KEY
+        proxyManaged: true
+        inject:
+          - {domain: api.openai.com, header: Authorization, format: "Bearer %s"}
+          - {domain: openai.com, header: Authorization, format: "Bearer %s"}
+      oauth:
+        tokenEndpoint: {host: auth.openai.com, path: /oauth/token}
+        resourceHosts:
+          - chatgpt.com
+        sentinels:
+          accessToken: oai-oat01-proxy-managed
+          refreshToken: oai-ort01-proxy-managed
+
+  - type: com.docker.sandbox/volume@1
+    config:
+      path: /var/lib/vscode-in-docker-sandbox/codex
+      size: 2g
+
+  - type: com.docker.sandbox/lifecycle@1
+    config:
+      install:
+        - command: |
+            set -e
+            mkdir -p /home/agent/.codex /home/agent/.agents
+            MODE="${SBX_CRED_OPENAI_MODE:-none}"
+            cat > /home/agent/.codex/config.toml << 'EOF'
+            approval_policy = "never"
+            sandbox_mode = "danger-full-access"
+            mcp_oauth_credentials_store = "file"
+            EOF
+            case "$MODE" in
+              oauth|apikey)
+                printf '%s\n' 'forced_login_method = "api"' >> /home/agent/.codex/config.toml
+                ;;
+            esac
+            if [ "$MODE" = oauth ]; then
+              cat >> /home/agent/.codex/config.toml << 'EOF'
+
+            model_provider = "sandboxd"
+
+            [model_providers.sandboxd]
+            name = "Sandbox Proxy"
+            base_url = "https://chatgpt.com/backend-api/codex"
+            experimental_bearer_token = "oai-oat01-proxy-managed"
+            requires_openai_auth = false
+            EOF
+            fi
+            ws="${WORKSPACE_DIR:-/home/agent/workspace}"
+            esc=$(printf '%s' "$ws" | sed 's/\\/\\\\/g; s/"/\\"/g')
+            printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "$esc" >> /home/agent/.codex/config.toml
+            case "$MODE" in
+              oauth|apikey)
+                printf '%s\n' '{"OPENAI_API_KEY":"proxy-managed"}' > /home/agent/.codex/auth.json
+                ;;
+              *) rm -f /home/agent/.codex/auth.json ;;
+            esac
+          user: agent
+          env: [SBX_CRED_OPENAI_MODE, WORKSPACE_DIR]
+          description: Seed Codex config and authentication
+        - command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+              codex_home=/home/agent/.codex
+              codex_state=/var/lib/vscode-in-docker-sandbox/codex
+              chown agent:agent "${codex_state}"
+              chmod 0700 "${codex_state}"
+              if [ -d "${codex_home}" ] && [ ! -L "${codex_home}" ]; then
+                cp -a "${codex_home}/." "${codex_state}/"
+                rm -rf "${codex_home}"
+              fi
+              ln -sfn "${codex_state}" "${codex_home}"
+              chown -h agent:agent "${codex_home}"
+          user: "0"
+          description: Connect Codex home to persistent storage
+
+  - type: com.docker.sandbox/agent-skills@1
+    optional: true
+    config:
+      path: /home/agent/.agents/skills
