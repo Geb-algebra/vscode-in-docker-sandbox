@@ -164,66 +164,6 @@ log() {
   printf '[sbx-vscode] %s\n' "$*" >&2
 }
 
-# BEGIN TEMPORARY WORKAROUND: docker/sbx-releases#744
-# sbx can deadlock while starting a layered image when the shim blocks writing
-# its large "creating container task" record to the shim log FIFO. A second
-# reader drains that record and lets the VM continue booting. Remove this whole
-# block, plus the matching activation/cleanup block below, once the upstream
-# issue is fixed in the installed sbx release.
-shim_log_reader_pid=""
-shim_log_marker=""
-shim_log_reader_pids_file=""
-shim_logs_seen_file=""
-
-start_shim_log_fifo_workaround() {
-  local shim_task_root="${HOME}/.sbx/run/d/containerd/state/io.containerd.runtime.v2.task/docker"
-
-  shim_log_marker="$(mktemp "${TMPDIR:-/tmp}/sbx-vscode-shim-log.XXXXXX")"
-  shim_log_reader_pids_file="$(mktemp "${TMPDIR:-/tmp}/sbx-vscode-shim-log-pids.XXXXXX")"
-  shim_logs_seen_file="$(mktemp "${TMPDIR:-/tmp}/sbx-vscode-shim-logs-seen.XXXXXX")"
-  (
-    while :; do
-      for shim_log in "${shim_task_root}"/*/log; do
-        [ -p "${shim_log}" ] || continue
-        [ "${shim_log}" -nt "${shim_log_marker}" ] || continue
-        grep -Fqx "${shim_log}" "${shim_logs_seen_file}" && continue
-        printf '%s\n' "${shim_log}" >>"${shim_logs_seen_file}"
-        cat "${shim_log}" >/dev/null &
-        printf '%s\n' "$!" >>"${shim_log_reader_pids_file}"
-      done
-      sleep 0.05
-    done
-  ) &
-  shim_log_reader_pid="$!"
-}
-
-stop_shim_log_fifo_workaround() {
-  local reader_pid
-
-  if [ -n "${shim_log_reader_pid}" ]; then
-    kill "${shim_log_reader_pid}" 2>/dev/null || true
-    wait "${shim_log_reader_pid}" 2>/dev/null || true
-    shim_log_reader_pid=""
-  fi
-  if [ -n "${shim_log_reader_pids_file}" ] && [ -f "${shim_log_reader_pids_file}" ]; then
-    while IFS= read -r reader_pid; do
-      kill "${reader_pid}" 2>/dev/null || true
-      wait "${reader_pid}" 2>/dev/null || true
-    done <"${shim_log_reader_pids_file}"
-    rm -f "${shim_log_reader_pids_file}"
-    shim_log_reader_pids_file=""
-  fi
-  if [ -n "${shim_logs_seen_file}" ]; then
-    rm -f "${shim_logs_seen_file}"
-    shim_logs_seen_file=""
-  fi
-  if [ -n "${shim_log_marker}" ]; then
-    rm -f "${shim_log_marker}"
-    shim_log_marker=""
-  fi
-}
-# END TEMPORARY WORKAROUND: docker/sbx-releases#744
-
 if [ "${NO_FIREWALL}" = "1" ]; then
   log "WARNING: all outbound network traffic is allowed for ${SANDBOX_NAME}"
   log "organization governance and sandbox profile deny rules still take precedence"
@@ -233,14 +173,6 @@ if [ -n "${GIT_COMMON_DIR}" ]; then
   log "linked worktree detected: ${WORKSPACE}"
   log "shared Git directory (read-write mount): ${GIT_COMMON_DIR}"
 fi
-
-# BEGIN TEMPORARY WORKAROUND ACTIVATION: docker/sbx-releases#744
-# Keep the FIFO reader active through both creation and the SSH-triggered start
-# of an existing stopped sandbox.
-start_shim_log_fifo_workaround
-trap 'stop_shim_log_fifo_workaround' EXIT
-trap 'stop_shim_log_fifo_workaround; exit 130' INT TERM
-# END TEMPORARY WORKAROUND ACTIVATION: docker/sbx-releases#744
 
 if sbx ls -q | grep -Fqx "${SANDBOX_NAME}"; then
   log "reusing sandbox: ${SANDBOX_NAME}"
@@ -293,13 +225,6 @@ if [ "${AUTO_OPEN}" != "0" ]; then
   log "opening the workspace in local VS Code over SSH"
   code --new-window --folder-uri "${REMOTE_FOLDER_URI}"
 fi
-
-# BEGIN TEMPORARY WORKAROUND CLEANUP: docker/sbx-releases#744
-# Do this after launching VS Code: a stuck FIFO reader must not prevent the
-# mounted workspace from opening automatically.
-stop_shim_log_fifo_workaround
-trap - EXIT INT TERM
-# END TEMPORARY WORKAROUND CLEANUP: docker/sbx-releases#744
 
 log "launcher finished; the sandbox remains available"
 log "stop it when finished with:"
