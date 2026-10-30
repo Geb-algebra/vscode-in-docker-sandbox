@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MISE_VERSION="2026.7.11"
+MISE_VERSION="2026.10.22"
 
 log() { printf '[vscode-in-sandbox:install] %s\n' "$*" >&2; }
 
@@ -22,7 +22,7 @@ install -D -m 0644 \
 log "installing system packages"
 apt-get update
 apt-get install -y --no-install-recommends \
-  ca-certificates curl git openssh-client pre-commit xz-utils zsh
+  ca-certificates curl git libatomic1 openssh-client pre-commit xz-utils zsh
 
 log "installing mise ${MISE_VERSION}"
 mise_download_dir="$(mktemp -d)"
@@ -39,8 +39,22 @@ log "installing tools from mise config"
 mise install --system
 
 for tool_bin in node npm npx corepack bun python python3 pip3 uv uvx terraform playwright-cli; do
-  tool_path="$(mise which "${tool_bin}")"
-  ln -sfn "${tool_path}" "/usr/local/bin/${tool_bin}"
+  case "${tool_bin}" in
+    npm|npx)
+      tool_path="$(mise which --tool npm:npm@12.2.1 "${tool_bin}")"
+      printf '#!/bin/sh\nexec %s "$@"\n' "${tool_path}" > "/usr/local/bin/${tool_bin}"
+      chmod 0755 "/usr/local/bin/${tool_bin}"
+      ;;
+    corepack)
+      tool_path="$(mise which --tool npm:corepack@0.36.0 "${tool_bin}")"
+      printf '#!/bin/sh\nexec %s "$@"\n' "${tool_path}" > "/usr/local/bin/${tool_bin}"
+      chmod 0755 "/usr/local/bin/${tool_bin}"
+      ;;
+    *)
+      tool_path="$(mise which "${tool_bin}")"
+      ln -sfn "${tool_path}" "/usr/local/bin/${tool_bin}"
+      ;;
+  esac
 done
 
 log "installing Playwright Chromium and runtime dependencies"
@@ -61,12 +75,19 @@ rm -rf \
   /var/lib/apt/lists/*
 
 log "verifying installed versions"
-test "$(mise --version | awk '{print $1}')" = "${MISE_VERSION}"
-test "$(node --version)" = "v24.18.0"
-test "$(bun --version)" = "1.3.14"
-test "$(python3 --version)" = "Python 3.14.6"
-test "$(uv --version | awk '{print $2}')" = "0.11.28"
-test "$(terraform version -json | awk -F '\"' '/terraform_version/ { print $4 }')" = "1.15.8"
+verify_version() {
+  local name="$1" actual="$2" expected="$3"
+  log "${name}: ${actual}"
+  test "${actual}" = "${expected}"
+}
+verify_version mise "$(mise --version | awk '{print $1}')" "${MISE_VERSION}"
+verify_version node "$(node --version)" "v26.13.0"
+verify_version npm "$(npm --version)" "12.2.1"
+verify_version corepack "$(corepack --version)" "0.36.0"
+verify_version bun "$(bun --version)" "1.4.4"
+verify_version python "$(python3 --version)" "Python 3.15.2"
+verify_version uv "$(uv --version | awk '{print $2}')" "0.13.6"
+verify_version terraform "$(terraform version -json | awk -F '\"' '/terraform_version/ { print $4 }')" "1.17.1"
 command -v codex >/dev/null
 codex --version >/dev/null
 command -v pre-commit >/dev/null
